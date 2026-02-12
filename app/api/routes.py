@@ -49,6 +49,90 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 router = APIRouter()
 
 
+@router.get("/automation/settings")
+def get_automation_settings(account_id: int | None = None):
+    from app.database import SessionLocal
+    from app.models import AutomationSetting, Account
+
+    db = SessionLocal()
+    try:
+        if account_id:
+            s = db.query(AutomationSetting).filter(AutomationSetting.account_id == account_id).first()
+        else:
+            # fallback: first account's settings
+            s = db.query(AutomationSetting).first()
+        if not s:
+            raise HTTPException(status_code=404, detail="Automation settings not found")
+        return {
+            "id": s.id,
+            "account_id": s.account_id,
+            "enabled": bool(s.enabled),
+            "frequency": s.frequency,
+            "daily_count": s.daily_count,
+            "weekly_count": s.weekly_count,
+            "start_hour": s.start_hour,
+            "end_hour": s.end_hour,
+            "only_draft": bool(s.only_draft),
+            "created_at": s.created_at,
+            "updated_at": s.updated_at,
+            "last_run_at": s.last_run_at,
+        }
+    finally:
+        db.close()
+
+
+@router.post("/automation/settings")
+def create_or_update_automation_settings(payload: dict, account_id: int | None = None):
+    from app.database import SessionLocal
+    from app.models import AutomationSetting, Account
+
+    db = SessionLocal()
+    try:
+        if account_id is None:
+            acct = db.query(Account).first()
+            if not acct:
+                raise HTTPException(status_code=400, detail="No account configured")
+            account_id = acct.id
+        setting = db.query(AutomationSetting).filter(AutomationSetting.account_id == account_id).first()
+        enabled = 1 if payload.get("enabled", True) else 0
+        if not setting:
+            setting = AutomationSetting(
+                account_id=account_id,
+                enabled=enabled,
+                frequency=payload.get("frequency", "daily"),
+                daily_count=payload.get("daily_count"),
+                weekly_count=payload.get("weekly_count"),
+                start_hour=payload.get("start_hour"),
+                end_hour=payload.get("end_hour"),
+                only_draft=1 if payload.get("only_draft", True) else 0,
+            )
+            db.add(setting)
+        else:
+            setting.enabled = enabled
+            setting.frequency = payload.get("frequency", setting.frequency)
+            setting.daily_count = payload.get("daily_count", setting.daily_count)
+            setting.weekly_count = payload.get("weekly_count", setting.weekly_count)
+            setting.start_hour = payload.get("start_hour", setting.start_hour)
+            setting.end_hour = payload.get("end_hour", setting.end_hour)
+            setting.only_draft = 1 if payload.get("only_draft", bool(setting.only_draft)) else 0
+        db.commit()
+        db.refresh(setting)
+        return {
+            "id": setting.id,
+            "account_id": setting.account_id,
+            "enabled": bool(setting.enabled),
+            "frequency": setting.frequency,
+            "daily_count": setting.daily_count,
+            "weekly_count": setting.weekly_count,
+            "start_hour": setting.start_hour,
+            "end_hour": setting.end_hour,
+            "only_draft": bool(setting.only_draft),
+            "created_at": setting.created_at,
+            "updated_at": setting.updated_at,
+            "last_run_at": setting.last_run_at,
+        }
+    finally:
+        db.close()
 @router.post("/accounts", response_model=AccountRead)
 def create_account(payload: AccountCreate, db: Session = Depends(get_db)):
     """
@@ -656,6 +740,11 @@ def publish_post_by_id(
                 post.scheduled_at_post = scheduled_at_utc  # type: ignore[assignment]
             else:
                 post.scheduled_at = scheduled_at_utc  # fallback for legacy clients
+            # Also store full time string if provided in body.start_time / end_time
+            if getattr(body, "start_time", None):
+                post.start_time = body.start_time
+            if getattr(body, "end_time", None):
+                post.end_time = body.end_time
 
             db.add(post)
             db.commit()

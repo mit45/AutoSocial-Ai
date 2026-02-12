@@ -91,3 +91,27 @@ class Account(Base):
     ig_user_id = Column(String, nullable=False)
     access_token = Column(Text, nullable=False)
     niche = Column(String, nullable=False)
+
+
+class AutomationSetting(Base):
+    """
+    Automation settings per account for automatic draft generation.
+    """
+
+    __tablename__ = "automation_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
+    enabled = Column(Integer, default=0, nullable=False)  # use 0/1
+    frequency = Column(String, nullable=False, default="daily")  # daily|weekly
+    daily_count = Column(Integer, nullable=True)
+    weekly_count = Column(Integer, nullable=True)
+    start_hour = Column(Integer, nullable=True)
+    end_hour = Column(Integer, nullable=True)
+    # store full time strings "HH:MM"
+    start_time = Column(String, nullable=True)
+    end_time = Column(String, nullable=True)
+    only_draft = Column(Integer, default=1, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=True)
+    last_run_at = Column(DateTime, nullable=True)

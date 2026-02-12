@@ -730,13 +730,7 @@
       if (!el) return null;
       var v = (el.value || "").trim();
       if (!v) return null;
-      if (v.indexOf(":") >= 0) {
-        var parts = v.split(":");
-        var h = parseInt(parts[0], 10);
-        return isNaN(h) ? null : h;
-      }
-      var n = parseInt(v, 10);
-      return isNaN(n) ? null : n;
+      return v; // return "HH:MM" string to backend (backend accepts start_time/end_time)
     }
 
     const payload = {
@@ -744,8 +738,8 @@
       frequency: automationFrequency.value,
       daily_count: automationDailyCount.value ? parseInt(automationDailyCount.value, 10) : null,
       weekly_count: automationWeeklyCount.value ? parseInt(automationWeeklyCount.value, 10) : null,
-      start_hour: readHourFromInput(automationStartHour),
-      end_hour: readHourFromInput(automationEndHour),
+      start_time: readHourFromInput(automationStartHour),
+      end_time: readHourFromInput(automationEndHour),
       only_draft: !!automationOnlyDraft.checked,
     };
     postJson(API_BASE + "/automation/settings", payload)
