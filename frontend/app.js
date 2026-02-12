@@ -691,4 +691,64 @@
 
   // ——— Init ———
   loadPosts("");
+
+  // ——— Automation settings UI ———
+  const automationEnabled = document.getElementById("automation-enabled");
+  const automationFrequency = document.getElementById("automation-frequency");
+  const automationDailyCount = document.getElementById("automation-daily-count");
+  const automationWeeklyCount = document.getElementById("automation-weekly-count");
+  const automationStartHour = document.getElementById("automation-start-hour");
+  const automationEndHour = document.getElementById("automation-end-hour");
+  const automationOnlyDraft = document.getElementById("automation-only-draft");
+  const btnAutomationSave = document.getElementById("btn-automation-save");
+  const automationMessage = document.getElementById("automation-message");
+
+  function loadAutomationSettings() {
+    hideMessage(automationMessage);
+    getJson(API_BASE + "/automation/settings")
+      .then(function (res) {
+        automationEnabled.checked = !!res.enabled;
+        automationFrequency.value = res.frequency || "daily";
+        automationDailyCount.value = res.daily_count || "";
+        automationWeeklyCount.value = res.weekly_count || "";
+        automationStartHour.value = res.start_hour != null ? res.start_hour : "";
+        automationEndHour.value = res.end_hour != null ? res.end_hour : "";
+        automationOnlyDraft.checked = !!res.only_draft;
+      })
+      .catch(function () {
+        // no settings yet — keep defaults
+      });
+  }
+
+  function saveAutomationSettings() {
+    hideMessage(automationMessage);
+    btnAutomationSave.disabled = true;
+    const payload = {
+      enabled: !!automationEnabled.checked,
+      frequency: automationFrequency.value,
+      daily_count: automationDailyCount.value ? parseInt(automationDailyCount.value, 10) : null,
+      weekly_count: automationWeeklyCount.value ? parseInt(automationWeeklyCount.value, 10) : null,
+      start_hour: automationStartHour.value ? parseInt(automationStartHour.value, 10) : null,
+      end_hour: automationEndHour.value ? parseInt(automationEndHour.value, 10) : null,
+      only_draft: !!automationOnlyDraft.checked,
+    };
+    postJson(API_BASE + "/automation/settings", payload)
+      .then(function (res) {
+        showMessage(automationMessage, "Ayarlar kaydedildi.", "success");
+      })
+      .catch(function (err) {
+        showMessage(automationMessage, err.message || "Ayar kaydedilemedi.", "error");
+      })
+      .finally(function () {
+        btnAutomationSave.disabled = false;
+      });
+  }
+
+  if (btnAutomationSave) {
+    btnAutomationSave.addEventListener("click", function () {
+      saveAutomationSettings();
+    });
+    // load on init
+    loadAutomationSettings();
+  }
 })();

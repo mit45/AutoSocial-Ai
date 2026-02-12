@@ -36,6 +36,48 @@
       <div id="generate-message" class="message" role="status" aria-live="polite" hidden></div>
     </section>
 
+    <section class="section section-automation" id="automation-section">
+      <h2 class="section-title">Otomatik Üretim Ayarları</h2>
+      <p class="section-desc">Otomatik taslak üretimini buradan açıp kapatabilir, frekans ve zaman aralıklarını belirleyebilirsiniz.</p>
+      <form id="form-automation" class="form-automation">
+        <div class="input-grid">
+          <label>
+            <input type="checkbox" id="automation-enabled" /> Etkin
+          </label>
+          <label>
+            Frekans
+            <select id="automation-frequency">
+              <option value="daily">Günlük</option>
+              <option value="weekly">Haftalık</option>
+            </select>
+          </label>
+          <label>
+            Günlük hedef
+            <input type="number" id="automation-daily-count" min="0" />
+          </label>
+          <label>
+            Haftalık hedef
+            <input type="number" id="automation-weekly-count" min="0" />
+          </label>
+          <label>
+            Başlangıç saati (0-23)
+            <input type="number" id="automation-start-hour" min="0" max="23" />
+          </label>
+          <label>
+            Bitiş saati (0-23)
+            <input type="number" id="automation-end-hour" min="0" max="23" />
+          </label>
+          <label>
+            <input type="checkbox" id="automation-only-draft" /> Sadece taslak üret
+          </label>
+        </div>
+        <div style="margin-top:0.75rem;">
+          <button type="button" id="btn-automation-save" class="btn btn-primary">Kaydet</button>
+          <span id="automation-message" class="message" hidden></span>
+        </div>
+      </form>
+    </section>
+
     <section class="section section-posts">
       <div class="section-head">
         <h2 class="section-title">Gönderiler</h2>
