@@ -18,29 +18,48 @@ def run_scheduled_publish():
     db = SessionLocal()
     try:
         now = datetime.utcnow()
+
+        # Find posts that are approved and have either post/story scheduled
         scheduled_posts = (
             db.query(Post)
+            .filter(Post.status == PostStatus.APPROVED)
             .filter(
-                Post.status == PostStatus.APPROVED,
-                Post.scheduled_at.isnot(None),
+                (Post.scheduled_at.isnot(None))
+                | (Post.scheduled_at_post.isnot(None))
+                | (Post.scheduled_at_story.isnot(None))
             )
             .all()
         )
 
-        def scheduled_time_passed(p):
-            s = p.scheduled_at
-            if s is None:
-                return False
+        def to_dt(s):
+            if not s:
+                return None
             if isinstance(s, str):
                 try:
-                    s = datetime.fromisoformat(s.replace("Z", "+00:00"))
+                    return datetime.fromisoformat(s.replace("Z", "+00:00"))
                 except Exception:
-                    return False
-            if getattr(s, "tzinfo", None):
-                s = s.astimezone(timezone.utc).replace(tzinfo=None)
-            return s <= now
+                    return None
+            return s
 
-        due = [p for p in scheduled_posts if scheduled_time_passed(p)]
+        def due_post(p):
+            s = p.scheduled_at_post or p.scheduled_at
+            dt = to_dt(s)
+            if not dt:
+                return False
+            if getattr(dt, "tzinfo", None):
+                dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+            return dt <= now
+
+        def due_story(p):
+            s = p.scheduled_at_story
+            dt = to_dt(s)
+            if not dt:
+                return False
+            if getattr(dt, "tzinfo", None):
+                dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+            return dt <= now
+
+        due = [p for p in scheduled_posts if due_post(p) or due_story(p)]
         if due:
             print(f"[SCHEDULED] At {now}: found {len(due)} post(s) due for publish")
 
@@ -76,41 +95,23 @@ def run_scheduled_publish():
                         )
                         continue
 
-                # Eğer story ise caption zorunlu değildir; story için farklı akış:
-                if post.type == PostType.STORY:
-                    # Story için image_url zorunlu
-                    if not image_url:
-                        errors.append(
-                            f"Post {post.id}: Story paylaşımı için image_url zorunludur"
-                        )
-                        continue
-                    ig_response = publish_story(
-                        image_url=image_url,
-                        ig_user_id=ig_user_id,
-                        access_token=access_token,
-                    )
-                else:
-                    # Hazırla: caption + hashtag'ler (hashtag'ler DB'de JSON veya comma-separated olabilir)
+                # Determine which parts are due
+                do_post_publish = due_post(post)
+                do_story_publish = due_story(post)
+
+                # publish POST if due
+                if do_post_publish:
+                    # Prepare caption/hashtags
                     hashtags_list = []
                     if post.hashtags:
                         try:
                             hashtags_list = json.loads(post.hashtags)
                         except Exception:
-                            hashtags_list = [
-                                h.strip()
-                                for h in str(post.hashtags).split(",")
-                                if h.strip()
-                            ]
-
-                    # format_post_text varsa kullan (caption + hashtag'ler), yoksa sadece caption
+                            hashtags_list = [h.strip() for h in str(post.hashtags).split(",") if h.strip()]
                     try:
                         from app.services.content_ai import format_post_text
 
-                        final_caption = (
-                            format_post_text(post.caption, hashtags_list)
-                            if hashtags_list
-                            else post.caption
-                        )
+                        final_caption = format_post_text(post.caption, hashtags_list) if hashtags_list else post.caption
                     except Exception:
                         final_caption = post.caption
 
@@ -121,54 +122,65 @@ def run_scheduled_publish():
                         access_token=access_token,
                     )
 
-                # Normalize different instagram response shapes (image vs story)
-                published_id = None
-                # If error at top level
-                if isinstance(ig_response, dict) and "error" in ig_response:
-                    post.status = PostStatus.FAILED
-                    post.error_message = str(
-                        ig_response.get("error", {}).get("message", "Unknown error")
-                    )
-                    errors.append(f"Post {post.id}: {post.error_message}")
-                    print(
-                        f"[SCHEDULED] Post {post.id}: Publish failed: {post.error_message}"
-                    )
-                else:
-                    # Try top-level id
-                    if isinstance(ig_response, dict) and ig_response.get("id"):
-                        published_id = str(ig_response.get("id"))
-                    # Some flows return nested publish_response dict
-                    elif isinstance(ig_response, dict) and isinstance(
-                        ig_response.get("publish_response"), dict
-                    ):
-                        published_id = str(ig_response["publish_response"].get("id"))
-                    # Some flows return nested creation_response with id (use as fallback)
-                    elif isinstance(ig_response, dict) and isinstance(
-                        ig_response.get("creation_response"), dict
-                    ):
-                        published_id = str(ig_response["creation_response"].get("id"))
-
-                    if published_id:
-                        post.status = PostStatus.PUBLISHED
-                        post.published_at = datetime.utcnow()
-                        post.ig_post_id = published_id
-                        post.account_id = account.id
-                        post.scheduled_at = None
-                        post.error_message = None
-                        published += 1
-                        print(
-                            f"[SCHEDULED] Post {post.id}: Published successfully (IG ID: {post.ig_post_id})"
-                        )
+                    # handle response
+                    published_id = None
+                    if isinstance(ig_response, dict) and "error" in ig_response:
+                        post.error_message = str(ig_response.get("error", {}).get("message", "Unknown error"))
+                        errors.append(f"Post {post.id} (post): {post.error_message}")
+                        print(f"[SCHEDULED] Post {post.id} (post): Publish failed: {post.error_message}")
                     else:
-                        # Unexpected response shape -> treat as failure with raw dump
-                        post.status = PostStatus.FAILED
-                        post.error_message = (
-                            f"Unexpected publish response: {ig_response}"
-                        )
-                        errors.append(f"Post {post.id}: {post.error_message}")
-                        print(
-                            f"[SCHEDULED] Post {post.id}: Unexpected publish response: {ig_response}"
-                        )
+                        if isinstance(ig_response, dict) and ig_response.get("id"):
+                            published_id = str(ig_response.get("id"))
+                        elif isinstance(ig_response, dict) and isinstance(ig_response.get("publish_response"), dict):
+                            published_id = str(ig_response["publish_response"].get("id"))
+                        elif isinstance(ig_response, dict) and isinstance(ig_response.get("creation_response"), dict):
+                            published_id = str(ig_response["creation_response"].get("id"))
+
+                        if published_id:
+                            post.published_at_post = datetime.utcnow()
+                            post.ig_post_id_post = published_id
+                            post.account_id = account.id
+                            post.scheduled_at_post = None
+                            post.error_message = None
+                            published += 1
+                            print(f"[SCHEDULED] Post {post.id}: Published POST successfully (IG ID: {published_id})")
+                        else:
+                            post.error_message = f"Unexpected publish response (post): {ig_response}"
+                            errors.append(f"Post {post.id}: {post.error_message}")
+                            print(f"[SCHEDULED] Post {post.id}: Unexpected publish response (post): {ig_response}")
+
+                # publish STORY if due
+                if do_story_publish:
+                    ig_response = publish_story(image_url=image_url, ig_user_id=ig_user_id, access_token=access_token)
+                    published_id = None
+                    if isinstance(ig_response, dict) and "error" in ig_response:
+                        post.error_message = str(ig_response.get("error", {}).get("message", "Unknown error"))
+                        errors.append(f"Post {post.id} (story): {post.error_message}")
+                        print(f"[SCHEDULED] Post {post.id} (story): Publish failed: {post.error_message}")
+                    else:
+                        if isinstance(ig_response, dict) and ig_response.get("id"):
+                            published_id = str(ig_response.get("id"))
+                        elif isinstance(ig_response, dict) and isinstance(ig_response.get("publish_response"), dict):
+                            published_id = str(ig_response["publish_response"].get("id"))
+                        elif isinstance(ig_response, dict) and isinstance(ig_response.get("creation_response"), dict):
+                            published_id = str(ig_response["creation_response"].get("id"))
+
+                        if published_id:
+                            post.published_at_story = datetime.utcnow()
+                            post.ig_post_id_story = published_id
+                            post.account_id = account.id
+                            post.scheduled_at_story = None
+                            post.error_message = None
+                            published += 1
+                            print(f"[SCHEDULED] Post {post.id}: Published STORY successfully (IG ID: {published_id})")
+                        else:
+                            post.error_message = f"Unexpected publish response (story): {ig_response}"
+                            errors.append(f"Post {post.id}: {post.error_message}")
+                            print(f"[SCHEDULED] Post {post.id}: Unexpected publish response (story): {ig_response}")
+
+                # If any side published, mark overall status as PUBLISHED
+                if post.published_at_post or post.published_at_story:
+                    post.status = PostStatus.PUBLISHED
 
                 db.add(post)
                 db.commit()

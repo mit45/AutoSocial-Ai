@@ -60,8 +60,16 @@ class Post(Base):
 
     # Zaman bilgileri
     scheduled_at = Column(DateTime, nullable=True)
+    # Separate scheduling for post and story (allow scheduling both at different times)
+    scheduled_at_post = Column(DateTime, nullable=True)
+    scheduled_at_story = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     published_at = Column(DateTime, nullable=True)
+    # Separate published timestamps and IG ids for post/story
+    published_at_post = Column(DateTime, nullable=True)
+    published_at_story = Column(DateTime, nullable=True)
+    ig_post_id_post = Column(String, nullable=True)
+    ig_post_id_story = Column(String, nullable=True)
 
     # Durum bilgileri
     status = Column(SQLEnum(PostStatus), default=PostStatus.DRAFT, nullable=False)

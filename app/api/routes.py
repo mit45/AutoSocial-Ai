@@ -631,65 +631,45 @@ def publish_post_by_id(
     # 5) Zamanlanmış yayın kontrolü
     now = datetime.utcnow()
     if body.scheduled_at:
+        # backward-compatible handling: store scheduled time per post_type (post/story) or generic
+        scheduled_str = body.scheduled_at.strip()
+        if scheduled_str.endswith("Z"):
+            scheduled_str = scheduled_str[:-1] + "+00:00"
         try:
-            # ISO format string'i datetime'a çevir
-            scheduled_str = body.scheduled_at.strip()
-            # 'Z' karakterini '+00:00' ile değiştir (Python fromisoformat için)
-            if scheduled_str.endswith("Z"):
-                scheduled_str = scheduled_str[:-1] + "+00:00"
-            # ISO format parse et
             try:
                 scheduled_at_utc = datetime.fromisoformat(scheduled_str)
             except ValueError:
-                # Fallback: strptime ile parse et
-                # ISO format: 2026-02-05T20:31:00.000Z veya 2026-02-05T20:31:00Z
-                scheduled_str_clean = scheduled_str.replace("+00:00", "").replace(
-                    "Z", ""
-                )
+                scheduled_str_clean = scheduled_str.replace("+00:00", "").replace("Z", "")
                 if "." in scheduled_str_clean:
-                    scheduled_at_utc = datetime.strptime(
-                        scheduled_str_clean, "%Y-%m-%dT%H:%M:%S.%f"
-                    )
+                    scheduled_at_utc = datetime.strptime(scheduled_str_clean, "%Y-%m-%dT%H:%M:%S.%f")
                 else:
-                    scheduled_at_utc = datetime.strptime(
-                        scheduled_str_clean, "%Y-%m-%dT%H:%M:%S"
-                    )
-            # Her zaman naive UTC yap (karşılaştırma için now ile uyumlu; aksi halde TypeError)
+                    scheduled_at_utc = datetime.strptime(scheduled_str_clean, "%Y-%m-%dT%H:%M:%S")
             if scheduled_at_utc.tzinfo is not None:
-                scheduled_at_utc = scheduled_at_utc.astimezone(timezone.utc).replace(
-                    tzinfo=None
-                )
-
+                scheduled_at_utc = scheduled_at_utc.astimezone(timezone.utc).replace(tzinfo=None)
             if scheduled_at_utc <= now:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Seçilen yayın saati geçmişe denk geliyor. Lütfen gelecek bir tarih ve saat seçin.",
-                )
-            # Zamanlanmış yayın: post'u scheduled olarak işaretle, hemen yayınlama
-            post.scheduled_at = scheduled_at_utc  # type: ignore[assignment]
+                raise HTTPException(status_code=400, detail="Seçilen yayın saati geçmişe denk geliyor. Lütfen gelecek bir tarih ve saat seçin.")
+
+            # Store scheduled time according to requested post_type
+            if getattr(body, "post_type", None) == "story":
+                post.scheduled_at_story = scheduled_at_utc  # type: ignore[assignment]
+            elif getattr(body, "post_type", None) == "post":
+                post.scheduled_at_post = scheduled_at_utc  # type: ignore[assignment]
+            else:
+                post.scheduled_at = scheduled_at_utc  # fallback for legacy clients
+
             db.add(post)
             db.commit()
-            return PublishResponse(
-                success=True,
-                error_message=None,
-                ig_post_id=None,
-                instagram_url=None,
-            )
+            return PublishResponse(success=True, error_message=None, ig_post_id=None, instagram_url=None)
         except HTTPException:
-            raise  # 400 "Scheduled time must be in the future" vb. olduğu gibi dönsün
+            raise
         except ValueError as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid scheduled_at format. Expected ISO format (e.g., 2026-02-05T20:31:00Z). Error: {str(e)}",
-            )
+            raise HTTPException(status_code=400, detail=f"Invalid scheduled_at format. Expected ISO format (e.g., 2026-02-05T20:31:00Z). Error: {str(e)}")
         except Exception as e:
             import traceback
 
             print(f"[ERROR] Scheduled publish failed: {e}")
             print(f"[ERROR] Traceback: {traceback.format_exc()}")
-            raise HTTPException(
-                status_code=500, detail=f"Failed to schedule post: {str(e)}"
-            )
+            raise HTTPException(status_code=500, detail=f"Failed to schedule post: {str(e)}")
 
     # scheduled_at yoksa veya None ise, hemen yayınla
     try:
