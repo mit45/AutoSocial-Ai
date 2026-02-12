@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autosocial-ai"
+version = "1.0.0"
+description = "AI-powered social media content generation platform"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "sqlalchemy>=2.0.0",
+    "psycopg2-binary>=2.9.9",
+    "redis>=5.0.0",
+    "celery>=5.3.0",
+    "openai>=1.3.0",
+    "python-dotenv>=1.0.1",
+]
+
+[tool.pyright]
+include = ["app", "worker"]
+exclude = ["**/__pycache__", "**/node_modules"]
+typeCheckingMode = "basic"
+reportMissingImports = true

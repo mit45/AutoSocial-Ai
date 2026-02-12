@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AutoSocial AI — İçerik Paneli</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap" rel="stylesheet" />
+  <link href="styles.css" rel="stylesheet" />
+</head>
+<body>
+  <header class="header">
+    <div class="header-inner">
+      <h1 class="logo">AutoSocial AI</h1>
+      <p class="tagline">AI destekli sosyal medya içerik üretimi</p>
+    </div>
+  </header>
+
+  <main class="main">
+    <section class="section section-generate">
+      <h2 class="section-title">Yeni içerik üret</h2>
+      <p class="section-desc">Konu girin; metin ve görsel taslak olarak oluşturulur, onayladıktan sonra yayınlayabilirsiniz.</p>
+      <form id="form-generate" class="form-generate">
+        <div class="input-wrap">
+          <label for="topic">Konu</label>
+          <textarea id="topic" name="topic" placeholder="Örn: AI araçları 2026" autocomplete="off" rows="2"></textarea>
+        </div>
+        <button type="submit" id="btn-generate" class="btn btn-primary" aria-live="polite">
+          <span class="btn-label">
+            <span class="btn-text">Üret</span>
+            <span class="btn-loading" aria-hidden="true">Üretiliyor…</span>
+          </span>
+        </button>
+      </form>
+      <div id="generate-message" class="message" role="status" aria-live="polite" hidden></div>
+    </section>
+
+    <section class="section section-posts">
+      <div class="section-head">
+        <h2 class="section-title">Gönderiler</h2>
+        <div class="filter-tabs" role="tablist">
+          <button type="button" class="tab active" data-status="" aria-selected="true">Tümü</button>
+          <button type="button" class="tab" data-status="draft">Taslak</button>
+          <button type="button" class="tab" data-status="approved">Onaylı</button>
+          <button type="button" class="tab" data-status="published">Yayında</button>
+        </div>
+      </div>
+      <div id="posts-list" class="posts-list">
+        <p id="posts-empty" class="empty-state">Henüz gönderi yok. Yukarıdan yeni içerik üretebilirsiniz.</p>
+        <div id="posts-cards" class="posts-cards"></div>
+      </div>
+    </section>
+  </main>
+
+  <aside id="modal" class="modal" hidden aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-panel">
+      <header class="modal-header">
+        <h2 id="modal-title" class="modal-title">Gönderi detayı</h2>
+        <button type="button" class="modal-close" data-close aria-label="Kapat">&times;</button>
+      </header>
+      <div id="modal-body" class="modal-body"></div>
+    </div>
+  </aside>
+
+  <script src="app.js"></script>
+</body>
+</html>
