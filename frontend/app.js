@@ -711,8 +711,11 @@
         automationFrequency.value = res.frequency || "daily";
         automationDailyCount.value = res.daily_count || "";
         automationWeeklyCount.value = res.weekly_count || "";
-        automationStartHour.value = res.start_hour != null ? res.start_hour : "";
-        automationEndHour.value = res.end_hour != null ? res.end_hour : "";
+        // convert hour integers (0-23) to time input value "HH:00"
+        automationStartHour.value =
+          res.start_hour != null ? String(res.start_hour).padStart(2, "0") + ":00" : "";
+        automationEndHour.value =
+          res.end_hour != null ? String(res.end_hour).padStart(2, "0") + ":00" : "";
         automationOnlyDraft.checked = !!res.only_draft;
       })
       .catch(function () {
@@ -748,6 +751,8 @@
     postJson(API_BASE + "/automation/settings", payload)
       .then(function (res) {
         showMessage(automationMessage, "Ayarlar kaydedildi.", "success");
+        // refresh UI with saved values
+        loadAutomationSettings();
       })
       .catch(function (err) {
         showMessage(automationMessage, err.message || "Ayar kaydedilemedi.", "error");
