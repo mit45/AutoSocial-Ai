@@ -187,6 +187,30 @@ body {
   gap: 0.5rem;
 }
 
+/* --- Time input visual fixes --- */
+.form-automation .input-grid input[type="time"] {
+  height: 40px;
+  padding: 0 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  box-sizing: border-box;
+  line-height: 1;
+}
+
+.form-automation .input-grid input[type="time"]::-webkit-calendar-picker-indicator {
+  opacity: 0.9;
+  filter: grayscale(0.2);
+  right: 8px;
+}
+
+.form-automation .input-grid label {
+  min-height: 40px;
+  justify-content: center;
+}
+
 
 .input-wrap {
   flex: 1;
