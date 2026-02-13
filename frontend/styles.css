@@ -94,6 +94,100 @@ body {
   align-items: flex-end;
 }
 
+/* Automation form styles */
+.form-automation {
+  padding-top: 0.5rem;
+}
+.form-automation .input-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.75rem;
+  align-items: center;
+  align-content: start;
+}
+.form-automation .input-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+.form-automation .input-grid .inline {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.95rem;
+  color: var(--text-muted);
+}
+.form-automation .input-grid input[type="number"],
+.form-automation .input-grid select {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+.form-automation .input-grid input[type="checkbox"] {
+  width: auto;
+  transform: none;
+  margin: 0;
+}
+.form-automation .message {
+  margin-left: 0.75rem;
+  display: inline-block;
+}
+
+@media (max-width: 800px) {
+  .form-automation .input-grid {
+    grid-template-columns: 1fr;
+  }
+  .form-automation .input-grid label {
+    flex-direction: column;
+  }
+}
+
+.form-automation button#btn-automation-save {
+  margin-top: 0.5rem;
+  min-width: 110px;
+}
+
+/* Make all form controls uniform and full width in automation form */
+.form-automation .input-grid input[type="text"],
+.form-automation .input-grid input[type="number"],
+.form-automation .input-grid input[type="time"],
+.form-automation .input-grid select,
+.form-automation .input-grid textarea {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  box-sizing: border-box;
+  height: 40px;
+}
+
+.form-automation .input-grid input[type="time"] {
+  padding-left: 0.5rem;
+}
+
+/* Checkbox label alignment */
+.form-automation .input-grid label input[type="checkbox"] {
+  width: auto;
+  margin-right: 0.5rem;
+  transform: none;
+}
+
+/* Make the 'Sadece taslak üret' label align left on desktop */
+.form-automation .input-grid label.checkbox-inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+
 .input-wrap {
   flex: 1;
   min-width: 200px;
