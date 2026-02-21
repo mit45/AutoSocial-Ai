@@ -88,17 +88,19 @@ def publish_post(payload):
             p = db.query(Post).filter(Post.id == int(post_id)).first()
             if p:
                 # success -> response may contain 'id' or error
-                if isinstance(result, dict) and result.get("id"):
-                    p.status = PostStatus.PUBLISHED  # type: ignore[assignment]
-                    p.published_at = datetime.utcnow()  # type: ignore[assignment]
-                    p.ig_post_id_post = str(result.get("id"))  # type: ignore[assignment]
-                    db.add(p)
-                    db.commit()
-                elif isinstance(result, dict) and result.get("error"):
-                    p.status = PostStatus.FAILED  # type: ignore[assignment]
-                    p.error_message = str(result.get("error"))
-                    db.add(p)
-                    db.commit()
+                if isinstance(result, dict):
+                    res_id = result.get("id")
+                    if res_id:
+                        p.status = PostStatus.PUBLISHED  # type: ignore[assignment]
+                        p.published_at = datetime.utcnow()  # type: ignore[assignment]
+                        p.ig_post_id_post = str(res_id)  # type: ignore[assignment]
+                        db.add(p)
+                        db.commit()
+                    elif result.get("error"):
+                        p.status = PostStatus.FAILED  # type: ignore[assignment]
+                        p.error_message = str(result.get("error"))
+                        db.add(p)
+                        db.commit()
     except Exception:
         try:
             db.close()
@@ -163,10 +165,11 @@ def publish_story_task(payload):
                 # success -> publish might return publish_id or publish_response with 'id'
                 publish_id = None
                 if isinstance(result, dict):
-                    if result.get("publish_id"):
-                        publish_id = result.get("publish_id")
-                    elif isinstance(result.get("publish_response"), dict) and result.get("publish_response").get("id"):
-                        publish_id = result.get("publish_response").get("id")
+                    publish_id = result.get("publish_id")
+                    if not publish_id:
+                        publish_resp = result.get("publish_response")
+                        if isinstance(publish_resp, dict):
+                            publish_id = publish_resp.get("id")
                 if publish_id:
                     p.status = PostStatus.PUBLISHED  # type: ignore[assignment]
                     p.published_at = datetime.utcnow()  # type: ignore[assignment]
