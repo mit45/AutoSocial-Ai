@@ -98,6 +98,10 @@ def run_scheduled_publish():
                 # Determine which parts are due
                 do_post_publish = due_post(post)
                 do_story_publish = due_story(post)
+                # If both post and story are due at the same time, prefer POST only
+                # (publishing both often creates duplicate posts; user expects a single publish)
+                if do_post_publish and do_story_publish:
+                    do_story_publish = False
 
                 # publish POST if due
                 if do_post_publish:

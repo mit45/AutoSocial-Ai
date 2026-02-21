@@ -1,3 +1,5 @@
+* text=auto
+.gitattributes text eol=lf
 # Normalize text files to LF in repository
 * text=auto eol=lf
 

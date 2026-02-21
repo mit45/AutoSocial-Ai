@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap" rel="stylesheet" />
   <link href="styles.css" rel="stylesheet" />
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml" />
 </head>
 <body>
   <header class="header">
@@ -51,25 +52,38 @@
               <option value="weekly">Haftalık</option>
             </select>
           </label>
-          <label>
-            Günlük hedef
-            <input type="number" id="automation-daily-count" min="0" />
-          </label>
-          <label>
-            Haftalık hedef
-            <input type="number" id="automation-weekly-count" min="0" />
-          </label>
-          <label>
-            Başlangıç saati
-            <input type="time" id="automation-start-hour" />
-          </label>
-          <label>
-            Bitiş saati
-            <input type="time" id="automation-end-hour" />
-          </label>
           <label class="checkbox-inline">
             <input type="checkbox" id="automation-only-draft" /> Sadece taslak üret
           </label>
+        </div>
+        <div class="automation-dynamic">
+          <!-- Daily times UI -->
+          <div id="automation-daily-panel" style="display:none; margin-top:0.75rem;">
+            <label style="font-weight:600; margin-bottom:0.5rem;">Günlük Saatler</label>
+            <div style="display:flex; gap:0.5rem; align-items:center;">
+              <input type="time" id="automation-daily-time" />
+              <button type="button" id="btn-add-daily-time" class="btn btn-secondary">Saat Ekle</button>
+            </div>
+            <div id="automation-daily-list" style="margin-top:0.5rem;"></div>
+          </div>
+          <!-- Weekly times UI -->
+          <div id="automation-weekly-panel" style="display:none; margin-top:0.75rem;">
+            <label style="font-weight:600; margin-bottom:0.5rem;">Haftalık Gün ve Saatler</label>
+            <div style="display:flex; gap:0.5rem; align-items:center;">
+              <select id="automation-weekday">
+                <option value="Mon">Pzt</option>
+                <option value="Tue">Sal</option>
+                <option value="Wed">Çar</option>
+                <option value="Thu">Per</option>
+                <option value="Fri">Cum</option>
+                <option value="Sat">Cmt</option>
+                <option value="Sun">Paz</option>
+              </select>
+              <input type="time" id="automation-weekly-time" />
+              <button type="button" id="btn-add-weekly-time" class="btn btn-secondary">Ekle</button>
+            </div>
+            <div id="automation-weekly-list" style="margin-top:0.5rem;"></div>
+          </div>
         </div>
         <div style="margin-top:0.75rem;">
           <button type="button" id="btn-automation-save" class="btn btn-primary">Kaydet</button>

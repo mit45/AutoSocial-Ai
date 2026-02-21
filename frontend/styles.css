@@ -211,6 +211,80 @@ body {
   justify-content: center;
 }
 
+/* list item style for automation times */
+.automation-time-item span {
+  font-size: 14px;
+  color: var(--text);
+}
+
+/* small responsive tweaks for automation panels */
+#automation-daily-panel, #automation-weekly-panel {
+  display: block;
+}
+
+@media (max-width: 720px) {
+  .form-automation .input-grid {
+    grid-template-columns: 1fr;
+  }
+  #automation-daily-panel, #automation-weekly-panel {
+    margin-top: 0.5rem;
+  }
+}
+
+/* Improved time input and buttons for automation panels */
+.automation-dynamic input[type="time"],
+#automation-weekday {
+  height: 40px;
+  padding: 0 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  box-sizing: border-box;
+  min-width: 140px;
+}
+
+.automation-dynamic .btn {
+  height: 40px;
+  padding: 0 12px;
+  border-radius: 8px;
+}
+
+.automation-time-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  margin-bottom: 0.4rem;
+}
+
+.automation-time-item button.btn-remove {
+  min-width: 68px;
+  height: 32px;
+  padding: 0 8px;
+}
+
+.automation-dynamic input[type="time"]::-webkit-calendar-picker-indicator {
+  right: 10px;
+  opacity: 0.95;
+}
+
+.automation-time-item .time-label {
+  flex: 0 0 auto;
+  margin-right: 0.5rem;
+  font-weight: 600;
+}
+.automation-time-item .time-countdown {
+  flex: 1 1 auto;
+  text-align: left;
+  color: var(--text-muted);
+  font-size: 0.95rem;
+}
+
 
 .input-wrap {
   flex: 1;
@@ -503,6 +577,7 @@ body {
   margin: 0 0 0.5rem 0;
   display: -webkit-box;
   -webkit-line-clamp: 2;
+  line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }

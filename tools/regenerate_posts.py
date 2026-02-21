@@ -92,7 +92,7 @@ def regen_post(post_id: int):
     # Upload final image remote
     filename_final = os.path.basename(abs_final)
     try:
-        public_final = upload_to_remote_server(final_bytes, filename_final)
+        public_final = upload_to_remote_server(final_bytes, filename_final, prefix="ig/post")
     except Exception as e:
         print("Upload final failed:", e)
         public_final = f"/media/{filename_final}"

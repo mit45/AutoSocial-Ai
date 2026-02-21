@@ -28,25 +28,44 @@ from app.services.content_ai import (
     generate_hashtags,
     format_post_text,
     generate_image_prompt,
-    generate_image_png_bytes,
 )
+from app.services.image_backend import generate_image_url, generate_image_bytes, render_from_bytes
+import tempfile
 from app.services.storage_service import (
     save_png_bytes_to_generated,
     upload_to_remote_server,
 )
+from app.utils import normalize_image_url
 from app.services.storage_service import delete_remote_file
 from app.services.image_render import render_image
 from app.config import BASE_URL
-from app.services.visual_ai import generate_image
 from app.services.monetization import attach_affiliate
 from app.services.instagram import publish_image
 from app.services.scheduler import next_post_time
-from app.services.scheduled_publisher import run_scheduled_publish
+from app.services.scheduler_api import run_scheduled_publish
 import json
+from app.services import r2_storage
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-
 router = APIRouter()
+
+
+def _public_image_url(u: str | None, expires: int = 300) -> str | None:
+    """
+    Return a URL suitable for public consumption (browser).
+    If the image is stored in R2 and not publicly accessible, generate a short-lived presigned URL.
+    """
+    if not u:
+        return u
+    try:
+        nu = normalize_image_url(u)
+        try:
+            presigned = r2_storage.generate_presigned_get_from_url(nu, expires=expires)
+        except Exception:
+            presigned = None
+        return presigned or nu
+    except Exception:
+        return u
 
 
 @router.get("/automation/settings")
@@ -63,6 +82,7 @@ def get_automation_settings(account_id: int | None = None):
             s = db.query(AutomationSetting).first()
         if not s:
             raise HTTPException(status_code=404, detail="Automation settings not found")
+        import json as _json
         return {
             "id": s.id,
             "account_id": s.account_id,
@@ -72,6 +92,10 @@ def get_automation_settings(account_id: int | None = None):
             "weekly_count": s.weekly_count,
             "start_hour": s.start_hour,
             "end_hour": s.end_hour,
+            "start_time": s.start_time,
+            "end_time": s.end_time,
+            "daily_times": _json.loads(s.daily_times) if s.daily_times else [],
+            "weekly_times": _json.loads(s.weekly_times) if s.weekly_times else [],
             "only_draft": bool(s.only_draft),
             "created_at": s.created_at,
             "updated_at": s.updated_at,
@@ -94,6 +118,7 @@ def create_or_update_automation_settings(payload: dict, account_id: int | None =
                 raise HTTPException(status_code=400, detail="No account configured")
             account_id = acct.id
         setting = db.query(AutomationSetting).filter(AutomationSetting.account_id == account_id).first()
+        import json as _json
         enabled = 1 if payload.get("enabled", True) else 0
         if not setting:
             setting = AutomationSetting(
@@ -104,6 +129,10 @@ def create_or_update_automation_settings(payload: dict, account_id: int | None =
                 weekly_count=payload.get("weekly_count"),
                 start_hour=payload.get("start_hour"),
                 end_hour=payload.get("end_hour"),
+                start_time=payload.get("start_time"),
+                end_time=payload.get("end_time"),
+                daily_times=_json.dumps(payload.get("daily_times") or []),
+                weekly_times=_json.dumps(payload.get("weekly_times") or []),
                 only_draft=1 if payload.get("only_draft", True) else 0,
             )
             db.add(setting)
@@ -114,6 +143,13 @@ def create_or_update_automation_settings(payload: dict, account_id: int | None =
             setting.weekly_count = payload.get("weekly_count", setting.weekly_count)
             setting.start_hour = payload.get("start_hour", setting.start_hour)
             setting.end_hour = payload.get("end_hour", setting.end_hour)
+            setting.start_time = payload.get("start_time", setting.start_time)
+            setting.end_time = payload.get("end_time", setting.end_time)
+            # Handle lists specially: allow empty lists to clear previous values.
+            if "daily_times" in payload:
+                setting.daily_times = _json.dumps(payload.get("daily_times") or [])
+            if "weekly_times" in payload:
+                setting.weekly_times = _json.dumps(payload.get("weekly_times") or [])
             setting.only_draft = 1 if payload.get("only_draft", bool(setting.only_draft)) else 0
         db.commit()
         db.refresh(setting)
@@ -202,7 +238,7 @@ def generate_post():
     formatted_post = format_post_text(caption_with_affiliate, hashtags)
 
     # 6) Görsel URL'si (OpenAI ile üretilmeye çalışılır, fallback varsa kullanılır)
-    image_url = generate_image(topic)
+    image_url = generate_image_url(topic)
 
     # 7) Önerilen yayın zamanı
     schedule = next_post_time()
@@ -456,46 +492,53 @@ def generate_content(
         )
         print(f"Warning: Image prompt generation failed: {e}")
 
-    # 5) Arka plan görseli üret ve kaydet
+    # 5) Arka plan görseli üret (background image). 
+    # Do NOT save the text-less background to persistent storage/R2; render text on a temporary file
     try:
-        png_bytes = generate_image_png_bytes(image_prompt)
-        relative_path_bg, public_url_bg = save_png_bytes_to_generated(png_bytes)
+        png_bytes = generate_image_bytes(image_prompt)
+        # write to a temporary file via render_from_bytes
+        relative_path_bg = None
+        public_url_bg = None
     except Exception as e:
         print(f"Warning: Image generation failed: {e}")
         relative_path_bg = None
-        public_url_bg = (
-            "https://images.pexels.com/photos/1032650/pexels-photo-1032650.jpeg"
-        )
+        public_url_bg = "https://images.pexels.com/photos/1032650/pexels-photo-1032650.jpeg"
 
     # 6) Arka plan üzerine metin bas (render-image); final görsel media/ içinde
     relative_path = relative_path_bg
     public_url = public_url_bg
-    background_full = (
-        BASE_DIR / "storage" / relative_path_bg if relative_path_bg else None
-    )
+    # Determine the background file path (temp file if generated above, else storage path)
+    if relative_path_bg:
+        background_full = BASE_DIR / "storage" / relative_path_bg
+    else:
+        # use temp file path if exists
+        background_full = Path(tmp_path) if 'tmp_path' in locals() and tmp_path else None
+
     if background_full and background_full.exists():
         try:
             signature = (body.signature or "ince düşlerim").strip()
             # If user requested story format, render a vertical story-sized image
-            target = (
-                "story" if getattr(body, "post_type", None) == "story" else "square"
-            )
-            rel_path_final, abs_path_final = render_image(
-                background_path=str(background_full),
-                text=caption,
-                signature=signature,
-                style=body.render_style or "minimal_dark",
-                target=target,
-            )
+            target = "story" if getattr(body, "post_type", None) == "story" else "square"
+            # If we have png_bytes (generated above), use render_from_bytes, else render from path
+            if 'png_bytes' in locals() and png_bytes:
+                rel_path_final, abs_path_final = render_from_bytes(png_bytes, caption, signature, body.render_style or "minimal_dark", target)
+            else:
+                rel_path_final, abs_path_final = render_image(
+                    background_path=str(background_full),
+                    text=caption,
+                    signature=signature,
+                    style=body.render_style or "minimal_dark",
+                    target=target,
+                )
             with open(abs_path_final, "rb") as f:
                 final_bytes = f.read()
             # Final görsel media/ klasöründe kaydedildi; şimdi remote server'a yükleyip public URL al
             filename_final = os.path.basename(abs_path_final)
             try:
-                public_url = upload_to_remote_server(final_bytes, filename_final)
+                prefix = "ig/story" if target == "story" else "ig/post"
+                public_url = upload_to_remote_server(final_bytes, filename_final, prefix=prefix)
             except Exception as e:
                 print(f"[WARNING] Final image upload failed: {e}")
-                # Fallback: local media path
                 public_url = f"/media/{filename_final}"
             relative_path = rel_path_final
         except Exception as e:
@@ -515,7 +558,7 @@ def generate_content(
         hashtags=json.dumps(hashtags),  # JSON string olarak sakla
         image_prompt=image_prompt,
         image_path=relative_path,
-        image_url=public_url,
+        image_url=normalize_image_url(public_url),
         type=post_type,
         status=PostStatus.DRAFT,
         created_at=datetime.utcnow(),
@@ -530,7 +573,7 @@ def generate_content(
         caption=caption,
         hashtags=hashtags,
         image_prompt=image_prompt,
-        image_url=public_url,
+        image_url=_public_image_url(public_url),
         status="draft",
         created_at=post.created_at,
     )
@@ -766,11 +809,23 @@ def publish_post_by_id(
 
         # Branch for story vs post
         if post.type == PostType.STORY:
-            # Story paylaşımı için image_url zorunludur
+            # Prefer story-specific image_url; fall back to generic image_url
+            image_url = post.image_url_story or post.image_url or body.image_url
+            # If still no image_url, attempt to generate a story image server-side
             if not image_url:
-                raise HTTPException(
-                    status_code=400, detail="Story paylaşımı için image_url zorunludur"
-                )
+                try:
+                    from app.services.image_render import render_story_image
+                    # Use caption or image_prompt to generate background/context
+                    prompt_text = caption or post.image_prompt or post.topic or "Square background"
+                    filename = f"{uuid4()}.png"
+                    public_url = render_story_image(prompt_text, filename, style=body.render_style or "minimal_dark")
+                    image_url = public_url
+                    # persist to post.image_url_story
+                    post.image_url_story = image_url
+                    db.add(post)
+                    db.commit()
+                except Exception as e:
+                    raise HTTPException(status_code=500, detail=f"Story image generation failed: {e}")
             # DEBUG: log container create payload intent
             try:
                 print(
@@ -811,64 +866,22 @@ def publish_post_by_id(
                         abs_candidate = None
 
                 if abs_candidate and abs_candidate.exists():
-                    # create 1080x1920 canvas and paste centered scaled image
-                    img = Image.open(abs_candidate).convert("RGBA")
-                    target_w, target_h = 1080, 1920
-                    # scale image to fit inside target while preserving aspect ratio
-                    img_ratio = img.width / img.height
-                    max_w = target_w
-                    max_h = target_h
-                    if img.width > max_w or img.height > max_h:
-                        # scale down
-                        if img_ratio >= 1:
-                            # wide
-                            new_w = min(img.width, max_w)
-                            new_h = int(new_w / img_ratio)
-                            if new_h > max_h:
-                                new_h = max_h
-                                new_w = int(new_h * img_ratio)
-                        else:
-                            # tall
-                            new_h = min(img.height, max_h)
-                            new_w = int(new_h * img_ratio)
-                            if new_w > max_w:
-                                new_w = max_w
-                                new_h = int(new_w / img_ratio)
-                        img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-                    # paste centered on story canvas
-                    canvas = Image.new("RGBA", (target_w, target_h), (0, 0, 0, 255))
-                    x = (target_w - img.width) // 2
-                    y = (target_h - img.height) // 2
-                    canvas.paste(img, (x, y), img)
-                    # save to media
-                    ensure_media_dir = None
+                    # Use centralized make_story_from_post to create a story canvas from the local image.
                     try:
-                        from app.services.image_render import ensure_media_dir
+                        from app.services.image_render import make_story_from_post
 
-                        ensure_media_dir()
-                    except Exception:
-                        pass
-                    out_name = f"story-{uuid4()}.png"
-                    out_path = BASE_DIR / "media" / out_name
-                    canvas.convert("RGB").save(out_path, "PNG")
-                    # upload to remote
-                    try:
-                        with open(out_path, "rb") as _f:
-                            public_url_story = upload_to_remote_server(
-                                _f.read(), out_name
-                            )
+                        public_url_story = make_story_from_post(str(abs_candidate))
                         image_url = public_url_story
-                    except Exception:
-                        image_url = f"/media/{out_name}"
+                    except Exception as e_inner:
+                        print(f"[WARN] Failed to generate story canvas from existing image via make_story_from_post: {e_inner}")
+                        image_url = image_url
             except Exception as e:
                 print(
                     f"[WARN] Failed to generate story canvas from existing image: {e}"
                 )
 
             # Call publish_story which returns creation_id and publish_response
-            story_result = publish_story(
-                image_url=image_url, ig_user_id=ig_user_id, access_token=access_token
-            )
+            story_result = publish_story(image_url=image_url, ig_user_id=ig_user_id, access_token=access_token)
             # If error returned
             if isinstance(story_result, dict) and story_result.get("error"):
                 err = story_result.get("error")
@@ -882,9 +895,10 @@ def publish_post_by_id(
                     detail=f"Story container oluşturulamadı: {err.get('message', err)}",
                 )
 
-            # story_result expected: {'creation_id':..., 'creation_response':..., 'publish_response':...}
+            # story_result expected: {'creation_id':..., 'creation_response':..., 'publish_response':..., 'publish_id': ...}
             creation_id = story_result.get("creation_id")
             publish_resp = story_result.get("publish_response")
+            publish_id = story_result.get("publish_id")
             # save creation_id temporarily in error_message field (or log). Better DB schema change can be added later.
             post.error_message = f"story_creation_id:{creation_id}"
             db.add(post)
@@ -985,6 +999,7 @@ def list_posts(
 
     # Hashtags'i JSON'dan parse et
     result = []
+    # use normalize_image_url from app.utils
     for post in posts:
         hashtags_str = post.hashtags
         if hashtags_str:
@@ -1005,7 +1020,7 @@ def list_posts(
                 caption=post.caption,
                 hashtags=hashtags_str,
                 image_prompt=post.image_prompt,
-                image_url=post.image_url,
+                image_url=_public_image_url(post.image_url),
                 type=post.type.value if post.type else "post",
                 status=post.status.value if post.status else "draft",
                 created_at=post.created_at,
@@ -1122,6 +1137,21 @@ def republish_post(
 
     try:
         result = publish_post_by_id(post_id, body, db)
+        # If publish failed at Instagram side, return HTTP 400 with error message for UI
+        try:
+            # result may be a PublishResponse pydantic model or dict-like
+            success = getattr(result, "success", None)
+            error_message = getattr(result, "error_message", None)
+            if success is False:
+                # restore original status if needed
+                if original_status == PostStatus.PUBLISHED:
+                    post.status = PostStatus.PUBLISHED  # type: ignore[assignment]
+                    db.add(post)
+                    db.commit()
+                raise HTTPException(status_code=400, detail=error_message or "Publish failed")
+        except Exception:
+            # If attribute access fails, just return the result
+            pass
         return result
     except HTTPException:
         # Eğer publish başarısız olursa, orijinal status'u geri yükle
@@ -1162,13 +1192,15 @@ def get_post(
         except json.JSONDecodeError:
             pass
 
+    # use normalize_image_url from app.utils
+
     return PostDetailResponse(
         id=post.id,
         topic=post.topic,
         caption=post.caption,
         hashtags=hashtags_str,
         image_prompt=post.image_prompt,
-        image_url=post.image_url,
+        image_url=_public_image_url(post.image_url),
         type=post.type.value if post.type else "post",
         status=post.status.value if post.status else "draft",
         created_at=post.created_at,

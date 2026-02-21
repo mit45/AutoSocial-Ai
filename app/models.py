@@ -54,6 +54,8 @@ class Post(Base):
     image_url = Column(
         String, nullable=True
     )  # Public URL (örn: /static/generated/abc.png)
+    image_url_post = Column(String, nullable=True)
+    image_url_story = Column(String, nullable=True)
 
     # Post türü
     type = Column(SQLEnum(PostType), default=PostType.POST, nullable=False)
@@ -115,3 +117,21 @@ class AutomationSetting(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=True)
     last_run_at = Column(DateTime, nullable=True)
+    # lists stored as JSON strings
+    daily_times = Column(Text, nullable=True)  # JSON array of "HH:MM"
+    weekly_times = Column(Text, nullable=True)  # JSON array of {"day": "Mon", "time":"HH:MM"}
+
+
+class AutomationRun(Base):
+    """
+    Records automation scheduler runs to prevent duplicate draft generation across processes.
+    Unique constraint on (setting_id, run_date) ensures a single claim per day per setting.
+    """
+
+    __tablename__ = "automation_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    setting_id = Column(Integer, ForeignKey("automation_settings.id"), nullable=False)
+    run_date = Column(String, nullable=False)  # ISO date YYYY-MM-DD
+    created_at = Column(DateTime, default=datetime.utcnow)
+

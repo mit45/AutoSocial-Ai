@@ -72,6 +72,34 @@ class PublishRequest(BaseModel):
     post_type: Optional[str] = None  # post/story/reels (opsiyonel override)
 
 
+class AutomationSettingCreate(BaseModel):
+    enabled: bool = True
+    frequency: str = "daily"
+    daily_count: Optional[int] = None
+    weekly_count: Optional[int] = None
+    start_hour: Optional[int] = None
+    end_hour: Optional[int] = None
+    only_draft: bool = True
+
+
+class AutomationSettingRead(BaseModel):
+    id: int
+    account_id: int
+    enabled: bool
+    frequency: str
+    daily_count: Optional[int]
+    weekly_count: Optional[int]
+    start_hour: Optional[int]
+    end_hour: Optional[int]
+    only_draft: bool
+    created_at: datetime
+    updated_at: Optional[datetime]
+    last_run_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
 class PublishResponse(BaseModel):
     """
     Instagram post atma sonucu.

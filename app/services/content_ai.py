@@ -15,7 +15,38 @@ def get_client():
 
 
 def generate_caption(topic):
-    prompt = f"Write a viral Instagram caption about: {topic}"
+    # Enforce allowed topics only
+    ALLOWED_TOPICS = [
+        "duygusal",
+        "ikili ilişkiler",
+        "aşk",
+        "arkadaşlık",
+        "platonik aşk",
+        "komedi",
+        "dram",
+    ]
+
+    def _choose_topic(t):
+        if not t:
+            return "duygusal"
+        tl = t.lower()
+        for a in ALLOWED_TOPICS:
+            if a in tl or tl in a:
+                return a
+        # fallback
+        return "duygusal"
+
+    topic_choice = _choose_topic(topic)
+
+    # Generate short, Instagram-appropriate caption constrained to allowed themes.
+    prompt = (
+        f"Türkçe olarak, Instagram için KISA, mobilde okunaklı ve paylaşılabilir bir içerik (1-3 kısa cümle) yaz.\n"
+        f"Konu: {topic_choice}\n"
+        f"- Bu içerik yalnızca şu temalardan biri üzerine olsun: {', '.join(ALLOWED_TOPICS)}.\n"
+        f"- Duygusal, samimi ve hafif dramatik ama umutlu bir ton kullanın.\n"
+        f"- Emoji kullanmak isterseniz 1-2 ile sınırlayın. CTA ya da 'yorumlarda paylaşın' gibi yönlendirmeler eklemeyin.\n"
+        f"- Sonunda hashtag eklemeyin (hashtag ayrı fonksiyonda üretilir).\n"
+    )
     client = get_client()
     resp = client.chat.completions.create(
         # gpt-4 yerine daha yaygın erişilebilen bir model kullan
@@ -39,15 +70,34 @@ def generate_hashtags(topic, caption=None, count=10):
         List[str]: Hashtag listesi (örn: ["#AI", "#Technology", ...])
     """
     try:
+        ALLOWED_TOPICS = [
+            "duygusal",
+            "ikili ilişkiler",
+            "aşk",
+            "arkadaşlık",
+            "platonik aşk",
+            "komedi",
+            "dram",
+        ]
+
+        def _choose_topic(t):
+            if not t:
+                return "duygusal"
+            tl = t.lower()
+            for a in ALLOWED_TOPICS:
+                if a in tl or tl in a:
+                    return a
+            return "duygusal"
+
         client = get_client()
-        context = f"Topic: {topic}"
+        topic_choice = _choose_topic(topic)
+        context = f"Konuyu Türkçe olarak ele al. Topic: {topic_choice}"
         if caption:
             context += f"\nCaption: {caption[:200]}"  # İlk 200 karakter
-
-        prompt = f"""Generate {count} relevant Instagram hashtags for this content:
+        prompt = f"""Türkçe bağlamda, bu içerik için {count} adet uygun Instagram hashtag'i üret.
 {context}
 
-Return ONLY the hashtags, one per line, starting with #. No explanations, just hashtags."""
+Sadece hashtag'leri döndürün, her satırda bir tane, '#' ile başlayacak şekilde. Açıklama yazmayın."""
 
         resp = client.chat.completions.create(
             model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}]
@@ -124,36 +174,46 @@ def format_post_text(caption, hashtags):
 
 def generate_image_prompt(topic: str) -> str:
     """
-    Verilen konuya göre görsel üretimi için prompt oluşturur.
-
-    Args:
-        topic: Post konusu
-
-    Returns:
-        str: Görsel üretimi için optimize edilmiş prompt
+    Create a compact image generation prompt optimized for quote overlay on Instagram.
+    The returned prompt should describe a square (1:1) background with negative space/area
+    for readable text, a clear mood/style and color palette. Do NOT include any readable text
+    in the image itself.
     """
+    ALLOWED_TOPICS = [
+        "duygusal",
+        "ikili ilişkiler",
+        "aşk",
+        "arkadaşlık",
+        "platonik aşk",
+        "komedi",
+        "dram",
+    ]
+
+    def _choose_topic(t):
+        if not t:
+            return "duygusal"
+        tl = t.lower()
+        for a in ALLOWED_TOPICS:
+            if a in tl or tl in a:
+                return a
+        return "duygusal"
+
     try:
         client = get_client()
-        prompt = f"""Create a detailed image generation prompt for an Instagram post about: {topic}
-
-The prompt should be:
-- Visual and descriptive
-- Suitable for a square 1:1 Instagram image
-- High quality and engaging
-- Include style suggestions (e.g., "modern", "vibrant", "minimalist")
-
-Return ONLY the image generation prompt, no explanations."""
-
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}]
+        topic_choice = _choose_topic(topic)
+        prompt = (
+            f"Create a concise image generation prompt for a square Instagram background about: {topic_choice}\n\n"
+            "- No readable text in the image (we'll overlay text later).\n"
+            "- Leave a clear centered negative space for a white or light-colored quote overlay.\n"
+            "- Style: soft, emotive, high-quality. Suggest palette (e.g., warm pastels or cool blues) and mood.\n"
+            "- Composition: minimal distractions in center, subtle texture, natural lighting or soft vignette.\n"
+            "Return ONLY the image prompt as a single paragraph."
         )
-
+        resp = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}])
         return resp.choices[0].message.content.strip()
-
     except Exception as e:
-        # Fallback: Basit prompt
         print(f"Warning: Image prompt generation failed: {e}")
-        return f"Square 1:1 Instagram post image, high quality, modern style, {topic}"
+        return f"Square 1:1 soft background with centered negative space for text, warm pastel palette, high quality, {topic}"
 
 
 def generate_image_png_bytes(image_prompt: str) -> bytes:

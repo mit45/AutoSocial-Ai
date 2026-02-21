@@ -709,14 +709,26 @@
       .then(function (res) {
         automationEnabled.checked = !!res.enabled;
         automationFrequency.value = res.frequency || "daily";
-        automationDailyCount.value = res.daily_count || "";
-        automationWeeklyCount.value = res.weekly_count || "";
-        // convert hour integers (0-23) to time input value "HH:00"
-        automationStartHour.value =
-          res.start_hour != null ? String(res.start_hour).padStart(2, "0") + ":00" : "";
-        automationEndHour.value =
-          res.end_hour != null ? String(res.end_hour).padStart(2, "0") + ":00" : "";
+        if (automationDailyCount) automationDailyCount.value = res.daily_count || "";
+        if (automationWeeklyCount) automationWeeklyCount.value = res.weekly_count || "";
+        // convert hour integers (0-23) to time input value "HH:00" (only if inputs present)
+        if (automationStartHour)
+          automationStartHour.value = res.start_hour != null ? String(res.start_hour).padStart(2, "0") + ":00" : "";
+        if (automationEndHour)
+          automationEndHour.value = res.end_hour != null ? String(res.end_hour).padStart(2, "0") + ":00" : "";
         automationOnlyDraft.checked = !!res.only_draft;
+        // daily_times and weekly_times rendering
+        const dailyList = document.getElementById("automation-daily-list");
+        const weeklyList = document.getElementById("automation-weekly-list");
+        if (dailyList) dailyList.innerHTML = "";
+        if (weeklyList) weeklyList.innerHTML = "";
+        (res.daily_times || []).forEach(function (t) {
+          if (dailyList) addDailyListItem(t);
+        });
+        (res.weekly_times || []).forEach(function (w) {
+          if (weeklyList) addWeeklyListItem(w);
+        });
+        togglePanels();
       })
       .catch(function () {
         // no settings yet — keep defaults
@@ -763,4 +775,357 @@
     // load on init
     loadAutomationSettings();
   }
+
+  // dynamic lists and panels
+  function togglePanels() {
+    const freq = automationFrequency.value;
+    document.getElementById("automation-daily-panel").style.display = freq === "daily" ? "" : "none";
+    document.getElementById("automation-weekly-panel").style.display = freq === "weekly" ? "" : "none";
+  }
+  automationFrequency && automationFrequency.addEventListener("change", togglePanels);
+
+  function addDailyListItem(timeStr) {
+    const list = document.getElementById("automation-daily-list");
+    const el = document.createElement("div");
+    el.className = "automation-time-item";
+    // allow either string "HH:MM" or object {time: "HH:MM", auto_approve: bool}
+    const item = typeof timeStr === "string" ? { time: timeStr, auto_approve: false } : timeStr || { time: "", auto_approve: false };
+    // content: label | auto-approve checkbox | countdown | remove
+    const label = document.createElement("span");
+    label.className = "time-label";
+    label.textContent = String(item.time);
+    const autoChk = document.createElement("input");
+    autoChk.type = "checkbox";
+    autoChk.className = "time-auto-approve";
+    autoChk.style.margin = "0 0.5rem";
+    autoChk.checked = !!item.auto_approve;
+    const autoLabel = document.createElement("label");
+    autoLabel.style.display = "inline-flex";
+    autoLabel.style.alignItems = "center";
+    autoLabel.style.gap = "0.25rem";
+    autoLabel.style.color = "var(--text-muted)";
+    autoLabel.appendChild(autoChk);
+    autoLabel.appendChild(document.createTextNode("Otomatik onayla"));
+    // Auto-publish options (shown/enabled only when auto_approve is checked)
+    const postPublishChk = document.createElement("input");
+    postPublishChk.type = "checkbox";
+    postPublishChk.className = "time-auto-publish-post";
+    postPublishChk.style.margin = "0 0.25rem";
+    postPublishChk.checked = !!item.auto_publish_post;
+    const postPublishLabel = document.createElement("label");
+    postPublishLabel.style.display = "inline-flex";
+    postPublishLabel.style.alignItems = "center";
+    postPublishLabel.style.gap = "0.25rem";
+    postPublishLabel.style.color = "var(--text-muted)";
+    postPublishLabel.appendChild(postPublishChk);
+    postPublishLabel.appendChild(document.createTextNode("Otomatik yayınla (Post)"));
+
+    const storyPublishChk = document.createElement("input");
+    storyPublishChk.type = "checkbox";
+    storyPublishChk.className = "time-auto-publish-story";
+    storyPublishChk.style.margin = "0 0.25rem";
+    storyPublishChk.checked = !!item.auto_publish_story;
+    const storyPublishLabel = document.createElement("label");
+    storyPublishLabel.style.display = "inline-flex";
+    storyPublishLabel.style.alignItems = "center";
+    storyPublishLabel.style.gap = "0.25rem";
+    storyPublishLabel.style.color = "var(--text-muted)";
+    storyPublishLabel.appendChild(storyPublishChk);
+    storyPublishLabel.appendChild(document.createTextNode("Otomatik yayınla (Story)"));
+    // Initially disable publish options if auto approval not checked
+    postPublishChk.disabled = !autoChk.checked;
+    storyPublishChk.disabled = !autoChk.checked;
+    autoChk.addEventListener("change", function () {
+      postPublishChk.disabled = !autoChk.checked;
+      storyPublishChk.disabled = !autoChk.checked;
+      if (!autoChk.checked) {
+        postPublishChk.checked = false;
+        storyPublishChk.checked = false;
+      }
+    });
+    const countdown = document.createElement("span");
+    countdown.className = "time-countdown";
+    countdown.style.margin = "0 0.75rem";
+    countdown.textContent = ""; // will be filled by timer
+    const btn = document.createElement("button");
+    btn.className = "btn btn-secondary btn-remove";
+    btn.type = "button";
+    btn.textContent = "Kaldır";
+    el.appendChild(label);
+    el.appendChild(autoLabel);
+    el.appendChild(postPublishLabel);
+    el.appendChild(storyPublishLabel);
+    el.appendChild(countdown);
+    el.appendChild(btn);
+    list.appendChild(el);
+    // start countdown timer for this daily time
+    const timerId = startDailyCountdown(countdown, String(item.time));
+    el.dataset.timerId = String(timerId);
+    btn.addEventListener("click", function () {
+      // clear timer
+      try {
+        const id = parseInt(el.dataset.timerId || "0", 10);
+        if (id) clearInterval(id);
+      } catch (e) {}
+      el.remove();
+    });
+  }
+
+  function addWeeklyListItem(obj) {
+    const list = document.getElementById("automation-weekly-list");
+    const el = document.createElement("div");
+    el.className = "automation-time-item";
+    const item = obj || { day: "", time: "", auto_approve: false };
+    const label = document.createElement("span");
+    label.className = "time-label";
+    const labelText = (item.day || "") + " " + (item.time || "");
+    label.textContent = labelText;
+    const autoChk = document.createElement("input");
+    autoChk.type = "checkbox";
+    autoChk.className = "time-auto-approve";
+    autoChk.style.margin = "0 0.5rem";
+    autoChk.checked = !!item.auto_approve;
+    const autoLabel = document.createElement("label");
+    autoLabel.style.display = "inline-flex";
+    autoLabel.style.alignItems = "center";
+    autoLabel.style.gap = "0.25rem";
+    autoLabel.style.color = "var(--text-muted)";
+    autoLabel.appendChild(autoChk);
+    autoLabel.appendChild(document.createTextNode("Otomatik onayla"));
+    const postPublishChk = document.createElement("input");
+    postPublishChk.type = "checkbox";
+    postPublishChk.className = "time-auto-publish-post";
+    postPublishChk.style.margin = "0 0.25rem";
+    postPublishChk.checked = !!item.auto_publish_post;
+    const postPublishLabel = document.createElement("label");
+    postPublishLabel.style.display = "inline-flex";
+    postPublishLabel.style.alignItems = "center";
+    postPublishLabel.style.gap = "0.25rem";
+    postPublishLabel.style.color = "var(--text-muted)";
+    postPublishLabel.appendChild(postPublishChk);
+    postPublishLabel.appendChild(document.createTextNode("Otomatik yayınla (Post)"));
+    const storyPublishChk = document.createElement("input");
+    storyPublishChk.type = "checkbox";
+    storyPublishChk.className = "time-auto-publish-story";
+    storyPublishChk.style.margin = "0 0.25rem";
+    storyPublishChk.checked = !!item.auto_publish_story;
+    const storyPublishLabel = document.createElement("label");
+    storyPublishLabel.style.display = "inline-flex";
+    storyPublishLabel.style.alignItems = "center";
+    storyPublishLabel.style.gap = "0.25rem";
+    storyPublishLabel.style.color = "var(--text-muted)";
+    storyPublishLabel.appendChild(storyPublishChk);
+    storyPublishLabel.appendChild(document.createTextNode("Otomatik yayınla (Story)"));
+    postPublishChk.disabled = !autoChk.checked;
+    storyPublishChk.disabled = !autoChk.checked;
+    autoChk.addEventListener("change", function () {
+      postPublishChk.disabled = !autoChk.checked;
+      storyPublishChk.disabled = !autoChk.checked;
+      if (!autoChk.checked) {
+        postPublishChk.checked = false;
+        storyPublishChk.checked = false;
+      }
+    });
+    const countdown = document.createElement("span");
+    countdown.className = "time-countdown";
+    countdown.style.margin = "0 0.75rem";
+    countdown.textContent = "";
+    const btn = document.createElement("button");
+    btn.className = "btn btn-secondary btn-remove";
+    btn.type = "button";
+    btn.textContent = "Kaldır";
+    el.appendChild(label);
+    el.appendChild(autoLabel);
+    el.appendChild(postPublishLabel);
+    el.appendChild(storyPublishLabel);
+    el.appendChild(countdown);
+    el.appendChild(btn);
+    list.appendChild(el);
+    // start weekly countdown
+    const timerId = startWeeklyCountdown(countdown, item);
+    el.dataset.timerId = String(timerId);
+    btn.addEventListener("click", function () {
+      try {
+        const id = parseInt(el.dataset.timerId || "0", 10);
+        if (id) clearInterval(id);
+      } catch (e) {}
+      el.remove();
+    });
+  }
+
+  // Countdown helpers
+  function pad(n) {
+    return String(n).padStart(2, "0");
+  }
+
+  function formatRemaining(sec) {
+    if (sec <= 0) return "00:00:00";
+    var h = Math.floor(sec / 3600);
+    var m = Math.floor((sec % 3600) / 60);
+    var s = Math.floor(sec % 60);
+    return pad(h) + ":" + pad(m) + ":" + pad(s);
+  }
+
+  function startDailyCountdown(el, timeStr) {
+    function computeSec() {
+      try {
+        var parts = String(timeStr).split(":");
+        var hh = parseInt(parts[0], 10) || 0;
+        var mm = parts.length > 1 ? parseInt(parts[1], 10) || 0 : 0;
+        var now = new Date();
+        var target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm, 0);
+        if (target <= now) {
+          // next day
+          target = new Date(target.getTime() + 24 * 3600 * 1000);
+        }
+        return Math.max(0, Math.floor((target.getTime() - now.getTime()) / 1000));
+      } catch (e) {
+        return 0;
+      }
+    }
+    el.textContent = formatRemaining(computeSec());
+    var id = setInterval(function () {
+      el.textContent = formatRemaining(computeSec());
+    }, 1000);
+    return id;
+  }
+
+  function startWeeklyCountdown(el, obj) {
+    function computeSec() {
+      try {
+        var now = new Date();
+        var weekdayMap = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 0 };
+        var dayCode = (obj && obj.day) || "";
+        var timeStr = (obj && obj.time) || "";
+        var targetWd = weekdayMap[dayCode];
+        if (targetWd === undefined) return 0;
+        // find next date with that weekday
+        var daysAhead = (targetWd - now.getDay() + 7) % 7;
+        var parts = String(timeStr).split(":");
+        var hh = parseInt(parts[0], 10) || 0;
+        var mm = parts.length > 1 ? parseInt(parts[1], 10) || 0 : 0;
+        var target = new Date(now.getFullYear(), now.getMonth(), now.getDate() + daysAhead, hh, mm, 0);
+        if (target <= now) {
+          // next week
+          target = new Date(target.getTime() + 7 * 24 * 3600 * 1000);
+        }
+        return Math.max(0, Math.floor((target.getTime() - now.getTime()) / 1000));
+      } catch (e) {
+        return 0;
+      }
+    }
+    el.textContent = formatRemaining(computeSec());
+    var id = setInterval(function () {
+      el.textContent = formatRemaining(computeSec());
+    }, 1000);
+    return id;
+  }
+
+  document.getElementById("btn-add-daily-time")?.addEventListener("click", function () {
+    const t = document.getElementById("automation-daily-time").value;
+    if (!t) return alert("Lütfen saat seçin.");
+    addDailyListItem(t);
+  });
+  document.getElementById("btn-add-weekly-time")?.addEventListener("click", function () {
+    const day = document.getElementById("automation-weekday").value;
+    const t = document.getElementById("automation-weekly-time").value;
+    if (!t) return alert("Lütfen saat seçin.");
+    addWeeklyListItem({ day: day, time: t });
+  });
+
+  // Delegated remove handlers (works even if buttons created elsewhere)
+  (function attachDelegatedRemovers() {
+    const dailyList = document.getElementById("automation-daily-list");
+    const weeklyList = document.getElementById("automation-weekly-list");
+    if (dailyList) {
+      dailyList.addEventListener("click", function (ev) {
+        const btn = ev.target.closest && ev.target.closest(".btn-remove");
+        if (!btn) return;
+        const item = btn.closest(".automation-time-item");
+        if (!item) return;
+        try {
+          const id = parseInt(item.dataset.timerId || "0", 10);
+          if (id) clearInterval(id);
+        } catch (e) {}
+        item.remove();
+      });
+    }
+    if (weeklyList) {
+      weeklyList.addEventListener("click", function (ev) {
+        const btn = ev.target.closest && ev.target.closest(".btn-remove");
+        if (!btn) return;
+        const item = btn.closest(".automation-time-item");
+        if (!item) return;
+        try {
+          const id = parseInt(item.dataset.timerId || "0", 10);
+          if (id) clearInterval(id);
+        } catch (e) {}
+        item.remove();
+      });
+    }
+  })();
+
+  // modify saveAutomationSettings to collect lists
+  const origSave = saveAutomationSettings;
+  saveAutomationSettings = function () {
+    // collect daily and weekly lists into payload before saving
+    const daily = Array.from(document.querySelectorAll("#automation-daily-list .automation-time-item")).map((el) => {
+      const timeLabel = el.querySelector(".time-label");
+      const chk = el.querySelector(".time-auto-approve");
+      const postChk = el.querySelector(".time-auto-publish-post");
+      const storyChk = el.querySelector(".time-auto-publish-story");
+      return {
+        time: timeLabel ? (timeLabel.textContent || "").trim() : "",
+        auto_approve: !!(chk && chk.checked),
+        auto_publish_post: !!(postChk && postChk.checked),
+        auto_publish_story: !!(storyChk && storyChk.checked),
+      };
+    });
+    const weekly = Array.from(document.querySelectorAll("#automation-weekly-list .automation-time-item")).map((el) => {
+      const timeLabel = el.querySelector(".time-label");
+      const chk = el.querySelector(".time-auto-approve");
+      const postChk = el.querySelector(".time-auto-publish-post");
+      const storyChk = el.querySelector(".time-auto-publish-story");
+      const txt = timeLabel ? (timeLabel.textContent || "").trim() : "";
+      const parts = txt.split(" ");
+      return {
+        day: parts[0] || "",
+        time: parts[1] || "",
+        auto_approve: !!(chk && chk.checked),
+        auto_publish_post: !!(postChk && postChk.checked),
+        auto_publish_story: !!(storyChk && storyChk.checked),
+      };
+    });
+    // attach to payload via closure trick: call inner function
+    hideMessage(automationMessage);
+    btnAutomationSave.disabled = true;
+    function readHourFromInput(el) {
+      if (!el) return null;
+      var v = (el.value || "").trim();
+      if (!v) return null;
+      return v;
+    }
+    const payload = {
+      enabled: !!(automationEnabled && automationEnabled.checked),
+      frequency: automationFrequency ? automationFrequency.value : "daily",
+      daily_count: automationDailyCount && automationDailyCount.value ? parseInt(automationDailyCount.value, 10) : null,
+      weekly_count: automationWeeklyCount && automationWeeklyCount.value ? parseInt(automationWeeklyCount.value, 10) : null,
+      start_time: readHourFromInput(automationStartHour),
+      end_time: readHourFromInput(automationEndHour),
+      only_draft: !!(automationOnlyDraft && automationOnlyDraft.checked),
+      daily_times: daily,
+      weekly_times: weekly,
+    };
+    postJson(API_BASE + "/automation/settings", payload)
+      .then(function (res) {
+        showMessage(automationMessage, "Ayarlar kaydedildi.", "success");
+        loadAutomationSettings();
+      })
+      .catch(function (err) {
+        showMessage(automationMessage, err.message || "Ayar kaydedilemedi.", "error");
+      })
+      .finally(function () {
+        btnAutomationSave.disabled = false;
+      });
+  };
 })();
