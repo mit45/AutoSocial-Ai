@@ -565,3 +565,110 @@ def publish_story(image_url, ig_user_id, access_token=None):
     if published_id:
         result["publish_id"] = published_id
     return result
+
+
+def get_media_list(ig_user_id: str, access_token: str | None = None, limit: int = 25) -> list[dict]:
+    """
+    Instagram'da yayınlanan medya listesini döndürür.
+    Returns: list of {id, caption, media_type, media_url, timestamp}
+    """
+    if access_token is None:
+        access_token = ACCESS_TOKEN
+    url = f"{INSTAGRAM_API}/{ig_user_id}/media"
+    params = {
+        "access_token": access_token,
+        "fields": "id,caption,media_type,media_url,timestamp",
+        "limit": limit,
+    }
+    try:
+        r = requests.get(url, params=params, timeout=30)
+        if r.status_code != 200:
+            return []
+        data = r.json()
+        return data.get("data", [])
+    except Exception:
+        return []
+
+
+def _insights_metrics_for_media_type(media_type: str) -> str | None:
+    """
+    Instagram Graph API: media type'a göre geçerli metrikleri döndürür.
+    CAROUSEL_ALBUM için insights yok (API dokümantasyonu). STORY sadece 24 saat.
+    """
+    kind = (media_type or "IMAGE").upper()
+    if kind in ("CAROUSEL_ALBUM", "CAROUSEL"):
+        return None  # Insights not available for album media
+    if kind in ("STORIES", "STORY"):
+        return "reach,replies,impressions"
+    if kind == "REELS":
+        return "reach,likes,comments,saved,views"
+    # IMAGE, VIDEO (feed posts)
+    return "reach,likes,comments,saved,impressions"
+
+
+def get_media_insights(media_id: str, access_token: str | None = None, media_type: str = "IMAGE") -> dict:
+    """
+    Tek bir medya için görüntülenme, erişim, beğeni, yorum, kaydetme sayılarını döndürür.
+    Hata durumunda API yanıtı loglanır; boş dict dönülür.
+    """
+    if access_token is None:
+        access_token = ACCESS_TOKEN
+    metrics = _insights_metrics_for_media_type(media_type)
+    if metrics is None:
+        try:
+            print(f"[instagram.get_media_insights] media_id={media_id} media_type={media_type}: insights not available for carousel album")
+        except Exception:
+            pass
+        return {}
+
+    url = f"{INSTAGRAM_API}/{media_id}/insights"
+    params = {"access_token": access_token, "metric": metrics}
+    try:
+        r = requests.get(url, params=params, timeout=15)
+        body = r.json() if r.text else {}
+
+        if r.status_code != 200:
+            try:
+                print(
+                    f"[instagram.get_media_insights] API error media_id={media_id} status={r.status_code} response={body}"
+                )
+            except Exception:
+                pass
+            return {}
+
+        data_list = body.get("data", [])
+        out = {}
+        for item in data_list:
+            name = item.get("name")
+            values = item.get("values", [])
+            if name and values:
+                out[name] = values[0].get("value", 0)
+        return out
+    except Exception as e:
+        try:
+            print(f"[instagram.get_media_insights] Exception media_id={media_id} error={e}")
+        except Exception:
+            pass
+        return {}
+
+
+def get_media_comments(media_id: str, access_token: str | None = None, limit: int = 50) -> list[dict]:
+    """
+    Bir medyanın yorumlarını döndürür. {username, text, timestamp}
+    """
+    if access_token is None:
+        access_token = ACCESS_TOKEN
+    url = f"{INSTAGRAM_API}/{media_id}/comments"
+    params = {
+        "access_token": access_token,
+        "fields": "username,text,timestamp",
+        "limit": limit,
+    }
+    try:
+        r = requests.get(url, params=params, timeout=15)
+        if r.status_code != 200:
+            return []
+        data = r.json()
+        return data.get("data", [])
+    except Exception:
+        return []

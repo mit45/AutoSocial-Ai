@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Instagram İstatistikleri — AutoSocial AI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap" rel="stylesheet" />
+  <link href="styles.css" rel="stylesheet" />
+  <style>
+    .insights-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem; }
+    .insights-header .header-brand .logo { margin: 0 0 0.25rem 0; }
+    .insights-list { display: flex; flex-direction: column; gap: 1.5rem; }
+    .insight-card { background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); border: 1px solid rgba(0,0,0,0.06); overflow: hidden; }
+    .insight-card .media-row { display: flex; gap: 1.25rem; padding: 1.25rem; flex-wrap: wrap; }
+    .insight-card .media-thumb { width: 160px; height: 160px; object-fit: cover; border-radius: var(--radius-sm); flex-shrink: 0; }
+    .insight-card .media-body { flex: 1; min-width: 200px; }
+    .insight-card .media-body .caption { color: var(--text-muted); font-size: 0.9375rem; margin: 0 0 0.75rem 0; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+    .insight-card .metrics { display: flex; flex-wrap: wrap; gap: 1rem; margin-bottom: 0.75rem; }
+    .insight-card .metric { display: flex; align-items: center; gap: 0.35rem; font-size: 0.875rem; color: var(--text); }
+    .insight-card .metric span:first-child { color: var(--text-muted); }
+    .insight-card .comments-section { padding: 0 1.25rem 1.25rem; border-top: 1px solid var(--border); padding-top: 1rem; }
+    .insight-card .comments-title { font-size: 0.9375rem; font-weight: 600; margin: 0 0 0.5rem 0; }
+    .insight-card .comment { font-size: 0.875rem; padding: 0.4rem 0; border-bottom: 1px solid rgba(0,0,0,0.05); }
+    .insight-card .comment:last-child { border-bottom: none; }
+    .insight-card .comment-username { font-weight: 600; color: var(--text); }
+    .insight-card .comment-text { color: var(--text-muted); }
+    .insights-empty, .insights-error { text-align: center; padding: 2rem; color: var(--text-muted); }
+    .insights-loading { text-align: center; padding: 2rem; }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <div class="header-inner insights-header">
+      <div class="header-brand">
+        <h1 class="logo">AutoSocial AI</h1>
+        <p class="tagline">Instagram istatistikleri</p>
+      </div>
+      <a href="/" class="btn btn-nav">Panele dön</a>
+    </div>
+  </header>
+
+  <main class="main">
+    <section class="section">
+      <h2 class="section-title">Yayınlanan içerikler</h2>
+      <p class="section-desc">Instagram'da paylaşılan gönderilerin görüntülenme, beğeni, kaydetme ve yorum verileri.</p>
+      <div id="insights-root">
+        <p id="insights-loading" class="insights-loading">Yükleniyor…</p>
+        <p id="insights-error" class="insights-error" hidden></p>
+        <p id="insights-empty" class="insights-empty" hidden>Henüz yayınlanmış içerik bulunamadı.</p>
+        <div id="insights-list" class="insights-list" hidden></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      const loadingEl = document.getElementById('insights-loading');
+      const errorEl = document.getElementById('insights-error');
+      const emptyEl = document.getElementById('insights-empty');
+      const listEl = document.getElementById('insights-list');
+
+      function hideAll() {
+        loadingEl.hidden = true;
+        errorEl.hidden = true;
+        emptyEl.hidden = true;
+        listEl.hidden = true;
+      }
+
+      function formatDate(iso) {
+        if (!iso) return '—';
+        try {
+          const d = new Date(iso);
+          return d.toLocaleDateString('tr-TR', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+        } catch (_) { return iso; }
+      }
+
+      function renderMetric(label, value) {
+        if (value === undefined || value === null) return '';
+        return '<div class="metric"><span>' + label + '</span><span>' + Number(value).toLocaleString('tr-TR') + '</span></div>';
+      }
+
+      function renderCard(item) {
+        const insights = item.insights || {};
+        const comments = item.comments || [];
+        const caption = (item.caption || '').trim();
+        const mediaUrl = item.media_url || '';
+        const timestamp = formatDate(item.timestamp);
+        const mediaType = (item.media_type || 'IMAGE').toLowerCase();
+
+        let metricsHtml = '';
+        metricsHtml += renderMetric('Görüntülenme', insights.impressions);
+        metricsHtml += renderMetric('Erişim', insights.reach);
+        metricsHtml += renderMetric('Beğeni', insights.likes);
+        metricsHtml += renderMetric('Kaydetme', insights.saved);
+        metricsHtml += renderMetric('Yorum', insights.comments);
+        if (mediaType === 'stories' || mediaType === 'story') {
+          metricsHtml += renderMetric('Yanıt', insights.replies);
+        }
+
+        let commentsHtml = '';
+        if (comments.length) {
+          commentsHtml = '<div class="comments-section"><div class="comments-title">Yorumlar (' + comments.length + ')</div>';
+          comments.forEach(function (c) {
+            commentsHtml += '<div class="comment"><span class="comment-username">' + (c.username || '—') + '</span> <span class="comment-text">' + (c.text || '').replace(/</g, '&lt;') + '</span></div>';
+          });
+          commentsHtml += '</div>';
+        }
+
+        return '<div class="insight-card">' +
+          '<div class="media-row">' +
+            (mediaUrl ? '<img class="media-thumb" src="' + mediaUrl.replace(/"/g, '&quot;') + '" alt="" loading="lazy" />' : '') +
+            '<div class="media-body">' +
+              (caption ? '<p class="caption">' + caption.replace(/</g, '&lt;').substring(0, 200) + (caption.length > 200 ? '…' : '') + '</p>' : '') +
+              '<p style="font-size:0.8rem; color: var(--text-muted); margin:0 0 0.5rem 0;">' + timestamp + '</p>' +
+              '<div class="metrics">' + (metricsHtml || '<span class="metric">İstatistik alınamadı</span>') + '</div>' +
+            '</div>' +
+          '</div>' +
+          commentsHtml +
+          '</div>';
+      }
+
+      fetch('/api/instagram/published', { credentials: 'same-origin' })
+        .then(function (r) {
+          if (!r.ok) throw new Error(r.status === 404 ? 'Hesap bulunamadı.' : r.status === 400 ? 'Token veya kullanıcı ID eksik.' : 'Veri alınamadı.');
+          return r.json();
+        })
+        .then(function (data) {
+          hideAll();
+          const media = (data && data.media) ? data.media : [];
+          if (media.length === 0) {
+            emptyEl.hidden = false;
+            return;
+          }
+          listEl.innerHTML = media.map(renderCard).join('');
+          listEl.hidden = false;
+        })
+        .catch(function (err) {
+          hideAll();
+          errorEl.textContent = err.message || 'Bir hata oluştu.';
+          errorEl.hidden = false;
+        });
+    })();
+  </script>
+</body>
+</html>

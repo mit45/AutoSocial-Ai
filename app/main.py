@@ -60,6 +60,15 @@ def panel():
     return FileResponse(index_path)
 
 
+@app.get("/insights", include_in_schema=False)
+def insights_page():
+    """Instagram istatistikleri sayfası (yayınlanan içerikler, görüntülenme, beğeni, yorumlar)."""
+    path = FRONTEND_DIR / "insights.html"
+    if path.exists():
+        return FileResponse(path)
+    return RedirectResponse(url="/")
+
+
 # CSS ve JS: hem Live Server (frontend/index.html) hem FastAPI (/) ile uyumlu
 if FRONTEND_DIR.exists():
 

@@ -43,7 +43,12 @@ from app.services.storage_service import delete_remote_file
 from app.services.image_render import render_image
 from app.config import BASE_URL
 from app.services.monetization import attach_affiliate
-from app.services.instagram import publish_image
+from app.services.instagram import (
+    publish_image,
+    get_media_list,
+    get_media_insights,
+    get_media_comments,
+)
 from app.services.scheduler import next_post_time
 from app.services.scheduler_api import run_scheduled_publish
 import json
@@ -176,6 +181,48 @@ def create_or_update_automation_settings(payload: dict, account_id: int | None =
         }
     finally:
         db.close()
+
+
+@router.get("/instagram/published")
+def get_instagram_published(account_id: int | None = None, db: Session = Depends(get_db)):
+    """
+    Instagram'da yayınlanan içerikleri, görüntülenme/beğeni/kaydetme/yorum verileriyle döndürür.
+    """
+    account = (
+        db.query(Account).filter(Account.id == account_id).first()
+        if account_id
+        else db.query(Account).first()
+    )
+    if not account:
+        raise HTTPException(status_code=404, detail="Hesap bulunamadı")
+    ig_user_id = str(account.ig_user_id) if account.ig_user_id else ""
+    raw_token = os.getenv("INSTAGRAM_ACCESS_TOKEN") or account.access_token
+    access_token = str(raw_token) if raw_token else None
+    if not access_token or not ig_user_id:
+        raise HTTPException(status_code=400, detail="Instagram token veya kullanıcı ID eksik")
+
+    media_list = get_media_list(ig_user_id, access_token, limit=25)
+    result = []
+    for m in media_list:
+        mid = m.get("id")
+        if not mid:
+            continue
+        mid_str = str(mid)
+        media_type = m.get("media_type", "IMAGE") or "IMAGE"
+        insights = get_media_insights(mid_str, access_token, media_type)
+        comments = get_media_comments(mid_str, access_token, limit=30)
+        result.append({
+            "id": mid,
+            "caption": m.get("caption"),
+            "media_type": media_type,
+            "media_url": m.get("media_url"),
+            "timestamp": m.get("timestamp"),
+            "insights": insights,
+            "comments": comments,
+        })
+    return {"media": result}
+
+
 @router.post("/accounts", response_model=AccountRead)
 def create_account(payload: AccountCreate, db: Session = Depends(get_db)):
     """
