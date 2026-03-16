@@ -1,14 +1,24 @@
+import random
 from datetime import datetime, timedelta, timezone
-from app.services.trend_radar import get_trending_topics
-from app.services.content_ai import generate_caption, generate_hashtags, generate_image_prompt
+from typing import cast
+
+from app.services.trend_radar import get_trending_topics, get_next_topic_and_type
+from app.services.content_ai import (
+    generate_caption,
+    generate_hashtags,
+    generate_image_prompt,
+    format_post_text,
+    shorten_caption_for_image,
+)
 from app.services.image_backend import generate_image_url, generate_image_bytes, render_from_bytes
 from app.services.monetization import attach_affiliate
-from worker.tasks import publish_post
+from app.services.instagram import publish_image as ig_publish_image, publish_story as ig_publish_story
 from app.database import SessionLocal
 from app.models import AutomationSetting, Account, Post, PostStatus
 from app.services.storage_service import save_png_bytes_to_generated, upload_to_remote_server
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
+from app.config import BASE_URL
 import json, os
 
 
@@ -62,13 +72,13 @@ def run_automation_check():
             # Parse explicit daily/weekly time lists first
             daily_times = []
             try:
-                daily_times = json.loads(s.daily_times) if s.daily_times else []
+                daily_times = json.loads(str(s.daily_times)) if s.daily_times else []
             except Exception:
                 daily_times = []
 
             weekly_times = []
             try:
-                weekly_times = json.loads(s.weekly_times) if s.weekly_times else []
+                weekly_times = json.loads(str(s.weekly_times)) if s.weekly_times else []
             except Exception:
                 weekly_times = []
 
@@ -77,8 +87,10 @@ def run_automation_check():
             except Exception:
                 pass
 
-            start_minutes = parse_time_str(s.start_time) if s.start_time else (s.start_hour * 60 if s.start_hour is not None else 0)
-            end_minutes = parse_time_str(s.end_time) if s.end_time else (s.end_hour * 60 if s.end_hour is not None else 23*60+59)
+            _start = parse_time_str(s.start_time) if s.start_time else ((cast(int, s.start_hour) * 60) if s.start_hour is not None else 0)
+            _end = parse_time_str(s.end_time) if s.end_time else ((cast(int, s.end_hour) * 60) if s.end_hour is not None else 23 * 60 + 59)
+            start_minutes = _start if _start is not None else 0
+            end_minutes = _end if _end is not None else (23 * 60 + 59)
             try:
                 print(f"[AUTOMATION] Window minutes: start={start_minutes} end={end_minutes}")
             except Exception:
@@ -96,13 +108,13 @@ def run_automation_check():
             # If specific daily_times are defined, honor them (generate at exact times)
             daily_times = []
             try:
-                daily_times = json.loads(s.daily_times) if s.daily_times else []
+                daily_times = json.loads(str(s.daily_times)) if s.daily_times else []
             except Exception:
                 daily_times = []
 
             weekly_times = []
             try:
-                weekly_times = json.loads(s.weekly_times) if s.weekly_times else []
+                weekly_times = json.loads(str(s.weekly_times)) if s.weekly_times else []
             except Exception:
                 weekly_times = []
             try:
@@ -110,17 +122,30 @@ def run_automation_check():
             except Exception:
                 pass
 
-            def generate_draft_for_setting(auto_approve: bool = False, auto_publish_post: bool = False, auto_publish_story: bool = False):
-                topic = get_trending_topics()[0]
-                # Dedup check: avoid creating multiple drafts in short time for same account/topic
+            def generate_draft_for_setting(auto_approve: bool = False, auto_publish_post: bool = False, auto_publish_story: bool = False, recent_threshold_minutes: int | None = None):
+                # Farklı tür ve konu; son 8 gönderinin konuları hariç tutulur, güncel trendlerden seçilir
+                recent_posts = (
+                    db.query(Post.topic)
+                    .filter(Post.account_id == s.account_id)
+                    .order_by(Post.created_at.desc())
+                    .limit(8)
+                    .all()
+                )
+                recent_topics = [str(p.topic) for p in recent_posts if p.topic]
+                last_topic = recent_topics[0] if recent_topics else None
+                topic, content_type = get_next_topic_and_type(
+                    exclude_last_topic=last_topic,
+                    exclude_recent_topics=recent_topics,
+                )
+                # Dedup check: avoid creating multiple drafts in short time for same account.
+                # When called from explicit daily_times/weekly_times slot, use shorter window (2 min) so each slot can produce one draft.
+                threshold_min = recent_threshold_minutes if recent_threshold_minutes is not None else 10
                 try:
-                    # Increase recent threshold to avoid rapid duplicate generation (race conditions).
-                    recent_threshold_minutes = 10
-                    cutoff = datetime.utcnow() - timedelta(minutes=recent_threshold_minutes)
+                    cutoff = datetime.utcnow() - timedelta(minutes=float(threshold_min))
                     recent_cnt = db.query(Post).filter(Post.account_id == s.account_id, Post.created_at >= cutoff).count()
                     if recent_cnt > 0:
                         try:
-                            print(f"[AUTOMATION] Skipping draft generation for setting id={s.id} - recent drafts found ({recent_cnt}) within last {recent_threshold_minutes} minutes.")
+                            print(f"[AUTOMATION] Skipping draft generation for setting id={s.id} - recent drafts found ({recent_cnt}) within last {threshold_min} minutes.")
                         except Exception:
                             pass
                         return
@@ -154,7 +179,7 @@ def run_automation_check():
                     # If claim fails for any reason, continue but rely on other dedupe checks.
                     pass
                 try:
-                    caption = generate_caption(topic)
+                    caption = generate_caption(topic, content_type=content_type)
                 except Exception:
                     caption = f"Auto draft: {topic}"
                 try:
@@ -176,7 +201,8 @@ def run_automation_check():
                 # If we have a temporary background file, render text on it and upload final only
                 # If we have background bytes, render final image and upload final only
                 try:
-                    rel_final, abs_final = render_from_bytes(png_bytes, caption, "ince düşlerim", "minimal_dark")
+                    image_text = shorten_caption_for_image(caption, max_chars=220)
+                    rel_final, abs_final = render_from_bytes(png_bytes, image_text, "ince düşlerim", "minimal_dark")
                     with open(abs_final, "rb") as f:
                         final_bytes = f.read()
                     filename = os.path.basename(abs_final)
@@ -195,7 +221,7 @@ def run_automation_check():
                 )
                 # Second safety check (re-query just before commit to reduce race windows).
                 try:
-                    cutoff2 = datetime.utcnow() - timedelta(minutes=recent_threshold_minutes)
+                    cutoff2 = datetime.utcnow() - timedelta(minutes=float(threshold_min))
                     recent_cnt2 = db.query(Post).filter(Post.account_id == s.account_id, Post.created_at >= cutoff2).count()
                     if recent_cnt2 > 0:
                         try:
@@ -215,70 +241,110 @@ def run_automation_check():
                     print(f"[AUTOMATION] Generated draft id={post.id} for setting id={s.id} topic={topic}")
                 except Exception:
                     pass
-                # If auto publish requested, dispatch publish tasks
+                # Otomatik yayınla: Celery'e bağımlı olmadan senkron yayın (worker olmadan da çalışır)
                 try:
-                    from worker.tasks import publish_post, publish_story_task
                     acct = db.query(Account).filter(Account.id == s.account_id).first()
-                    if acct:
+                    if not acct:
+                        pass
+                    else:
                         ig_user_id = acct.ig_user_id
-                        access_token = acct.access_token
-                        # schedule publishing tasks with 60s delay to allow any backend processing to settle
+                        access_token = os.getenv("INSTAGRAM_ACCESS_TOKEN") or acct.access_token
+                        image_url_abs = public_url
+                        if image_url_abs and (image_url_abs.startswith("/static/") or image_url_abs.startswith("/media/")):
+                            domain = (BASE_URL or "http://127.0.0.1:8000").rstrip("/")
+                            image_url_abs = domain + image_url_abs
+
                         if auto_publish_post:
-                            payload = {
-                                "image": public_url,
-                                "caption": caption,
-                                "ig_user_id": ig_user_id,
-                                "access_token": access_token,
-                                "post_id": post.id,
-                                "account_id": s.account_id,
-                            }
                             try:
-                                # schedule 60s later
-                                publish_post.apply_async(args=(payload,), countdown=60)
-                                # Clear any scheduled_at fields to avoid duplicate scheduled_publisher runs
+                                formatted_caption = format_post_text(caption, hashtags) if hashtags else caption
+                                result = ig_publish_image(
+                                    image_url_abs,
+                                    formatted_caption,
+                                    ig_user_id,
+                                    access_token,
+                                )
+                                db_inner = SessionLocal()
+                                try:
+                                    p2 = db_inner.query(Post).filter(Post.id == post.id).first()
+                                    if p2:
+                                        if isinstance(result, dict) and result.get("id"):
+                                            p2.status = PostStatus.PUBLISHED  # type: ignore[assignment]
+                                            p2.published_at = datetime.utcnow()  # type: ignore[assignment]
+                                            p2.ig_post_id_post = str(result["id"])  # type: ignore[assignment]
+                                            p2.scheduled_at = None
+                                            p2.scheduled_at_post = None
+                                            p2.scheduled_at_story = None
+                                            print(f"[AUTOMATION] Auto-published POST for draft id={post.id} ig_id={result['id']}")
+                                        elif isinstance(result, dict) and result.get("error"):
+                                            p2.status = PostStatus.FAILED  # type: ignore[assignment]
+                                            p2.error_message = str(result.get("error", {}).get("message", result.get("error")))
+                                            print(f"[AUTOMATION] Auto-publish POST failed for draft id={post.id}: {p2.error_message}")
+                                        db_inner.add(p2)
+                                        db_inner.commit()
+                                finally:
+                                    db_inner.close()
+                            except Exception as e:
+                                print(f"[AUTOMATION] Auto-publish POST failed for draft id={post.id}: {e}")
                                 try:
                                     db_inner = SessionLocal()
                                     p2 = db_inner.query(Post).filter(Post.id == post.id).first()
                                     if p2:
-                                        p2.scheduled_at = None
-                                        p2.scheduled_at_post = None
-                                        p2.scheduled_at_story = None
+                                        p2.status = PostStatus.FAILED  # type: ignore[assignment]
+                                        p2.error_message = str(e)
                                         db_inner.add(p2)
                                         db_inner.commit()
                                     db_inner.close()
                                 except Exception:
                                     pass
-                                print(f"[AUTOMATION] Scheduled publish_post task (in 60s) for draft id={post.id}")
-                            except Exception as e:
-                                print(f"[AUTOMATION] Failed to schedule publish_post task: {e}")
+
                         if auto_publish_story:
-                            payload_s = {
-                                "image_url": public_url,
-                                "ig_user_id": ig_user_id,
-                                "access_token": access_token,
-                                "post_id": post.id,
-                                "account_id": s.account_id,
-                            }
                             try:
-                                publish_story_task.apply_async(args=(payload_s,), countdown=60)
-                                # Clear scheduled fields to avoid duplicate scheduling
+                                result = ig_publish_story(
+                                    image_url_abs,
+                                    ig_user_id,
+                                    access_token,
+                                )
+                                db_inner = SessionLocal()
+                                try:
+                                    p2 = db_inner.query(Post).filter(Post.id == post.id).first()
+                                    if p2:
+                                        publish_id = None
+                                        if isinstance(result, dict):
+                                            publish_id = result.get("publish_id")
+                                            if not publish_id and isinstance(result.get("publish_response"), dict):
+                                                publish_id = result.get("publish_response", {}).get("id")
+                                        if publish_id:
+                                            p2.status = PostStatus.PUBLISHED  # type: ignore[assignment]
+                                            p2.published_at = datetime.utcnow()  # type: ignore[assignment]
+                                            p2.ig_post_id_story = str(publish_id)  # type: ignore[assignment]
+                                            p2.scheduled_at = None
+                                            p2.scheduled_at_post = None
+                                            p2.scheduled_at_story = None
+                                            print(f"[AUTOMATION] Auto-published STORY for draft id={post.id} ig_id={publish_id}")
+                                        elif isinstance(result, dict) and result.get("error"):
+                                            p2.error_message = str(result.get("error", {}).get("message", result.get("error")))
+                                            if p2.status != PostStatus.PUBLISHED:
+                                                p2.status = PostStatus.FAILED  # type: ignore[assignment]
+                                            print(f"[AUTOMATION] Auto-publish STORY failed for draft id={post.id}: {p2.error_message}")
+                                        db_inner.add(p2)
+                                        db_inner.commit()
+                                finally:
+                                    db_inner.close()
+                            except Exception as e:
+                                print(f"[AUTOMATION] Auto-publish STORY failed for draft id={post.id}: {e}")
                                 try:
                                     db_inner = SessionLocal()
                                     p2 = db_inner.query(Post).filter(Post.id == post.id).first()
                                     if p2:
-                                        p2.scheduled_at = None
-                                        p2.scheduled_at_post = None
-                                        p2.scheduled_at_story = None
+                                        p2.status = PostStatus.FAILED  # type: ignore[assignment]
+                                        p2.error_message = str(e)
                                         db_inner.add(p2)
                                         db_inner.commit()
                                     db_inner.close()
                                 except Exception:
                                     pass
-                                print(f"[AUTOMATION] Scheduled publish_story task (in 60s) for draft id={post.id}")
-                            except Exception as e:
-                                print(f"[AUTOMATION] Failed to schedule publish_story task: {e}")
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[AUTOMATION] Auto-publish error: {e}")
 
             # If frequency == daily and explicit daily_times exist, check them
             if s.frequency == "daily" and daily_times:
@@ -310,7 +376,8 @@ def run_automation_check():
                             if not last_run_local or last_run_local < scheduled_local:
                                 auto_publish_post = bool(t.get("auto_publish_post")) if isinstance(t, dict) else False
                                 auto_publish_story = bool(t.get("auto_publish_story")) if isinstance(t, dict) else False
-                                generate_draft_for_setting(auto_approve=auto_approve, auto_publish_post=auto_publish_post, auto_publish_story=auto_publish_story)
+                                # Use 2-min recent window so consecutive slots (e.g. 01:08 and 01:10) can each generate one draft with image
+                                generate_draft_for_setting(auto_approve=auto_approve, auto_publish_post=auto_publish_post, auto_publish_story=auto_publish_story, recent_threshold_minutes=2)
                     except Exception:
                         continue
                 # done with this setting
@@ -358,7 +425,7 @@ def run_automation_check():
                             if not last_run_local or last_run_local < scheduled_dt.astimezone(local_tz):
                                 auto_publish_post = bool(item.get("auto_publish_post")) if isinstance(item, dict) else False
                                 auto_publish_story = bool(item.get("auto_publish_story")) if isinstance(item, dict) else False
-                                generate_draft_for_setting(auto_approve=auto_approve, auto_publish_post=auto_publish_post, auto_publish_story=auto_publish_story)
+                                generate_draft_for_setting(auto_approve=auto_approve, auto_publish_post=auto_publish_post, auto_publish_story=auto_publish_story, recent_threshold_minutes=2)
                     except Exception:
                         continue
                 continue

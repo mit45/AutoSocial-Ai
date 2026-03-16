@@ -1,6 +1,9 @@
 import os
 import re
+from pathlib import Path
+
 import requests
+
 from app.services import r2_storage
 
 # Keep a configurable API version; v19 may be unavailable on some accounts. Fallback to v16.0 if not set.
@@ -180,13 +183,20 @@ def publish_image(image_url, caption, ig_user_id, access_token=None):
         error_code = error_info.get("code", "unknown")
         error_type = error_info.get("type", "unknown")
 
-        # Token süresi dolmuşsa özel mesaj
+        # Token süresi dolmuş veya geçersizse özel mesaj
         if error_code == 190:
             if (
                 "expired" in error_message.lower()
                 or "Session has expired" in error_message
+                or "invalidated" in error_message.lower()
+                or "password" in error_message.lower()
+                or "security" in error_message.lower()
             ):
-                error_message = f"Instagram access token expired. Please refresh your token. Original: {error_message}"
+                error_message = (
+                    "Instagram access token geçersiz veya süresi dolmuş. "
+                    "Meta for Developers üzerinden yeni uzun ömürlü token alıp .env (INSTAGRAM_ACCESS_TOKEN) veya hesap ayarlarındaki token alanını güncelleyin. "
+                    f"Orijinal: {error_message}"
+                )
 
         print(
             f"[ERROR] Instagram API error: {error_message} (code: {error_code}, type: {error_type})"
@@ -454,6 +464,17 @@ def publish_story(image_url, ig_user_id, access_token=None):
             error_message = error_info.get("message", "Failed to create media container for story")
             error_code = error_info.get("code", "unknown")
             error_type = error_info.get("type", "unknown")
+            if error_code == 190 and (
+                "expired" in str(error_message).lower()
+                or "invalidated" in str(error_message).lower()
+                or "password" in str(error_message).lower()
+                or "security" in str(error_message).lower()
+            ):
+                error_message = (
+                    "Instagram access token geçersiz veya süresi dolmuş. "
+                    "Meta for Developers üzerinden yeni uzun ömürlü token alıp .env (INSTAGRAM_ACCESS_TOKEN) veya hesap ayarlarındaki token alanını güncelleyin. "
+                    f"Orijinal: {error_message}"
+                )
             print(f"[ERROR] Instagram API error (story create): {error_message} (code: {error_code}, type: {error_type})")
             print(f"[ERROR] Full response: {r}")
             return {

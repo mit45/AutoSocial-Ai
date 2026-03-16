@@ -1,6 +1,8 @@
 import os
+import random
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -22,12 +24,13 @@ from app.schemas import (
     RenderImageResponse,
 )
 from app.models import PostStatus, PostType
-from app.services.trend_radar import get_trending_topics
+from app.services.trend_radar import get_trending_topics, get_next_topic_and_type
 from app.services.content_ai import (
     generate_caption,
     generate_hashtags,
     format_post_text,
     generate_image_prompt,
+    shorten_caption_for_image,
 )
 from app.services.image_backend import generate_image_url, generate_image_bytes, render_from_bytes
 import tempfile
@@ -59,10 +62,12 @@ def _public_image_url(u: str | None, expires: int = 300) -> str | None:
         return u
     try:
         nu = normalize_image_url(u)
-        try:
-            presigned = r2_storage.generate_presigned_get_from_url(nu, expires=expires)
-        except Exception:
-            presigned = None
+        presigned = None
+        if nu:
+            try:
+                presigned = r2_storage.generate_presigned_get_from_url(nu, expires=expires)
+            except Exception:
+                pass
         return presigned or nu
     except Exception:
         return u
@@ -82,10 +87,9 @@ def get_automation_settings(account_id: int | None = None):
             s = db.query(AutomationSetting).first()
         if not s:
             raise HTTPException(status_code=404, detail="Automation settings not found")
-        import json as _json
         return {
-            "id": s.id,
-            "account_id": s.account_id,
+            "id": cast(int, s.id),  # type: ignore[arg-type]
+            "account_id": cast(int, s.account_id),  # type: ignore[arg-type]
             "enabled": bool(s.enabled),
             "frequency": s.frequency,
             "daily_count": s.daily_count,
@@ -94,8 +98,8 @@ def get_automation_settings(account_id: int | None = None):
             "end_hour": s.end_hour,
             "start_time": s.start_time,
             "end_time": s.end_time,
-            "daily_times": _json.loads(s.daily_times) if s.daily_times else [],
-            "weekly_times": _json.loads(s.weekly_times) if s.weekly_times else [],
+            "daily_times": json.loads(str(s.daily_times)) if s.daily_times else [],
+            "weekly_times": json.loads(str(s.weekly_times)) if s.weekly_times else [],
             "only_draft": bool(s.only_draft),
             "created_at": s.created_at,
             "updated_at": s.updated_at,
@@ -116,9 +120,8 @@ def create_or_update_automation_settings(payload: dict, account_id: int | None =
             acct = db.query(Account).first()
             if not acct:
                 raise HTTPException(status_code=400, detail="No account configured")
-            account_id = acct.id
+            account_id = cast(int, acct.id)
         setting = db.query(AutomationSetting).filter(AutomationSetting.account_id == account_id).first()
-        import json as _json
         enabled = 1 if payload.get("enabled", True) else 0
         if not setting:
             setting = AutomationSetting(
@@ -131,8 +134,8 @@ def create_or_update_automation_settings(payload: dict, account_id: int | None =
                 end_hour=payload.get("end_hour"),
                 start_time=payload.get("start_time"),
                 end_time=payload.get("end_time"),
-                daily_times=_json.dumps(payload.get("daily_times") or []),
-                weekly_times=_json.dumps(payload.get("weekly_times") or []),
+                daily_times=json.dumps(payload.get("daily_times") or []),
+                weekly_times=json.dumps(payload.get("weekly_times") or []),
                 only_draft=1 if payload.get("only_draft", True) else 0,
             )
             db.add(setting)
@@ -147,21 +150,25 @@ def create_or_update_automation_settings(payload: dict, account_id: int | None =
             setting.end_time = payload.get("end_time", setting.end_time)
             # Handle lists specially: allow empty lists to clear previous values.
             if "daily_times" in payload:
-                setting.daily_times = _json.dumps(payload.get("daily_times") or [])
+                setting.daily_times = json.dumps(payload.get("daily_times") or [])
             if "weekly_times" in payload:
-                setting.weekly_times = _json.dumps(payload.get("weekly_times") or [])
+                setting.weekly_times = json.dumps(payload.get("weekly_times") or [])
             setting.only_draft = 1 if payload.get("only_draft", bool(setting.only_draft)) else 0
         db.commit()
         db.refresh(setting)
         return {
-            "id": setting.id,
-            "account_id": setting.account_id,
+            "id": cast(int, setting.id),  # type: ignore[arg-type]
+            "account_id": cast(int, setting.account_id),  # type: ignore[arg-type]
             "enabled": bool(setting.enabled),
             "frequency": setting.frequency,
-            "daily_count": setting.daily_count,
-            "weekly_count": setting.weekly_count,
+            "daily_count": cast(int | None, setting.daily_count),
+            "weekly_count": cast(int | None, setting.weekly_count),
             "start_hour": setting.start_hour,
             "end_hour": setting.end_hour,
+            "start_time": setting.start_time,
+            "end_time": setting.end_time,
+            "daily_times": json.loads(str(setting.daily_times)) if setting.daily_times else [],
+            "weekly_times": json.loads(str(setting.weekly_times)) if setting.weekly_times else [],
             "only_draft": bool(setting.only_draft),
             "created_at": setting.created_at,
             "updated_at": setting.updated_at,
@@ -215,11 +222,11 @@ def generate_post():
         }
     """
     # 1) Konu seç
-    topic = get_trending_topics()[0]
+    topic, content_type = get_next_topic_and_type()
 
-    # 2) OpenAI ile caption üret
+    # 2) OpenAI ile caption üret (türe göre)
     try:
-        raw_caption = generate_caption(topic)
+        raw_caption = generate_caption(topic, content_type=content_type)
     except Exception as e:
         raw_caption = f"Test post about {topic}. #AI #Automation"
         print(f"Warning: Caption generation failed: {e}")
@@ -384,22 +391,32 @@ def run_pipeline(
                 detail="No accounts configured. Create one with POST /api/accounts",
             )
 
-    # 2) Konu secimi
-    topic = body.topic or get_trending_topics()[0]
+    # 2) Konu ve tür secimi – son gönderilerin konuları hariç, çeşitli konulardan seç
+    recent_posts = db.query(Post.topic).order_by(Post.created_at.desc()).limit(8).all()
+    recent_topics = [str(p.topic) for p in recent_posts if p.topic]
+    last_topic = recent_topics[0] if recent_topics else None
+    if body.topic:
+        topic = body.topic
+        # Kullanıcı manuel konu girdiyse, varsayılan olarak ilginç bilgi türü kullan
+        content_type = "ilginç_bilgi"
+    else:
+        topic, content_type = get_next_topic_and_type(
+            exclude_last_topic=last_topic,
+            exclude_recent_topics=recent_topics,
+        )
 
-    # 3) Caption uret (OpenAI + affiliate)
+    # 3) Caption uret (OpenAI + affiliate), türe göre
     caption = None
     error_message: str | None = None
     try:
-        caption = generate_caption(topic)
+        caption = generate_caption(topic, content_type=content_type)
         caption = attach_affiliate(caption)
     except Exception as exc:  # noqa: BLE001
         error_message = f"caption_error: {exc}"
-        # Basarisiz olsa da fallback caption ile devam edebiliriz
         caption = f"Test post: {topic} #AI #Automation #Test"
 
     # 4) Gorsel URL uret
-    image_url = generate_image(topic)
+    image_url = generate_image_url(topic)
 
     # 5) Hashtag üret (opsiyonel, eğer yoksa)
     hashtags_list = []
@@ -466,12 +483,23 @@ def generate_content(
             "created_at": datetime
         }
     """
-    # 1) Konu seçimi
-    topic = body.topic or get_trending_topics()[0]
+    # 1) Konu ve tür seçimi – son gönderilerin konuları hariç, güncel trend ve çeşitlilik
+    recent_posts = db.query(Post.topic).order_by(Post.created_at.desc()).limit(8).all()
+    recent_topics = [str(p.topic) for p in recent_posts if p.topic]
+    last_topic = recent_topics[0] if recent_topics else None
+    if body.topic:
+        topic = body.topic
+        # Manuel girilen konu için varsayılan tür: ilginç_bilgi
+        content_type = "ilginç_bilgi"
+    else:
+        topic, content_type = get_next_topic_and_type(
+            exclude_last_topic=last_topic,
+            exclude_recent_topics=recent_topics,
+        )
 
-    # 2) Caption üret
+    # 2) Caption üret (türüne göre: ilginç_bilgi, bilim, teknoloji, yapay_zeka, tasarim, uzay)
     try:
-        caption = generate_caption(topic)
+        caption = generate_caption(topic, content_type=content_type)
     except Exception as e:
         caption = f"Test post about {topic}. #AI #Automation"
         print(f"Warning: Caption generation failed: {e}")
@@ -494,53 +522,56 @@ def generate_content(
 
     # 5) Arka plan görseli üret (background image). 
     # Do NOT save the text-less background to persistent storage/R2; render text on a temporary file
+    png_bytes = None
+    relative_path_bg = None
+    public_url_bg = "https://images.pexels.com/photos/1032650/pexels-photo-1032650.jpeg"
     try:
         png_bytes = generate_image_bytes(image_prompt)
-        # write to a temporary file via render_from_bytes
-        relative_path_bg = None
-        public_url_bg = None
     except Exception as e:
         print(f"Warning: Image generation failed: {e}")
-        relative_path_bg = None
-        public_url_bg = "https://images.pexels.com/photos/1032650/pexels-photo-1032650.jpeg"
 
     # 6) Arka plan üzerine metin bas (render-image); final görsel media/ içinde
     relative_path = relative_path_bg
     public_url = public_url_bg
-    # Determine the background file path (temp file if generated above, else storage path)
-    if relative_path_bg:
-        background_full = BASE_DIR / "storage" / relative_path_bg
-    else:
-        # use temp file path if exists
-        background_full = Path(tmp_path) if 'tmp_path' in locals() and tmp_path else None
+    # Determine the background file path when we have one; otherwise None (we may still have png_bytes)
+    background_full = (BASE_DIR / "storage" / relative_path_bg) if relative_path_bg else None
 
-    if background_full and background_full.exists():
+    signature = (body.signature or "ince düşlerim").strip()
+    target = "story" if getattr(body, "post_type", None) == "story" else "square"
+    do_render = (png_bytes is not None) or (background_full is not None and background_full.exists())
+
+    if do_render:
         try:
-            signature = (body.signature or "ince düşlerim").strip()
-            # If user requested story format, render a vertical story-sized image
-            target = "story" if getattr(body, "post_type", None) == "story" else "square"
-            # If we have png_bytes (generated above), use render_from_bytes, else render from path
-            if 'png_bytes' in locals() and png_bytes:
-                rel_path_final, abs_path_final = render_from_bytes(png_bytes, caption, signature, body.render_style or "minimal_dark", target)
-            else:
+            image_text = shorten_caption_for_image(caption, max_chars=320 if target == "story" else 220)
+            if png_bytes:
+                rel_path_final, abs_path_final = render_from_bytes(
+                    png_bytes,
+                    image_text,
+                    signature,
+                    body.render_style or "minimal_dark",
+                    target,
+                )
+            elif background_full and background_full.exists():
                 rel_path_final, abs_path_final = render_image(
                     background_path=str(background_full),
-                    text=caption,
+                    text=image_text,
                     signature=signature,
                     style=body.render_style or "minimal_dark",
                     target=target,
                 )
-            with open(abs_path_final, "rb") as f:
-                final_bytes = f.read()
-            # Final görsel media/ klasöründe kaydedildi; şimdi remote server'a yükleyip public URL al
-            filename_final = os.path.basename(abs_path_final)
-            try:
-                prefix = "ig/story" if target == "story" else "ig/post"
-                public_url = upload_to_remote_server(final_bytes, filename_final, prefix=prefix)
-            except Exception as e:
-                print(f"[WARNING] Final image upload failed: {e}")
-                public_url = f"/media/{filename_final}"
-            relative_path = rel_path_final
+            else:
+                rel_path_final, abs_path_final = None, None
+            if abs_path_final:
+                with open(abs_path_final, "rb") as f:
+                    final_bytes = f.read()
+                filename_final = os.path.basename(abs_path_final)
+                try:
+                    prefix = "ig/story" if target == "story" else "ig/post"
+                    public_url = upload_to_remote_server(final_bytes, filename_final, prefix=prefix)
+                except Exception as e:
+                    print(f"[WARNING] Final image upload failed: {e}")
+                    public_url = f"/media/{filename_final}"
+                relative_path = rel_path_final
         except Exception as e:
             print(f"Warning: Render image failed, using background only: {e}")
 
@@ -551,8 +582,13 @@ def generate_content(
     elif body.post_type == "reels":
         post_type = PostType.REELS
 
-    # 8) DB'ye DRAFT olarak kaydet (kullanıcı onaylamadan paylaşım yapılmaz)
+    # 8) Account (ilk hesap kullanılır)
+    account = db.query(Account).first()
+    account_id = account.id if account else None
+
+    # 9) DB'ye DRAFT olarak kaydet (kullanıcı onaylamadan paylaşım yapılmaz)
     post = Post(
+        account_id=account_id,
         topic=topic,
         caption=caption,
         hashtags=json.dumps(hashtags),  # JSON string olarak sakla
@@ -567,15 +603,15 @@ def generate_content(
     db.commit()
     db.refresh(post)
 
-    # 9) Response döndür
+    # 10) Response döndür
     return GenerateResponse(
-        post_id=post.id,
+        post_id=cast(int, post.id),
         caption=caption,
         hashtags=hashtags,
         image_prompt=image_prompt,
-        image_url=_public_image_url(public_url),
+        image_url=_public_image_url(public_url) or "",
         status="draft",
-        created_at=post.created_at,
+        created_at=cast(datetime, post.created_at),
     )
 
 
@@ -741,7 +777,7 @@ def publish_post_by_id(
     hashtags_list = []
     if post.hashtags:
         try:
-            hashtags_list = json.loads(post.hashtags)
+            hashtags_list = json.loads(str(post.hashtags))
         except Exception:
             hashtags_list = [
                 h.strip() for h in str(post.hashtags).split(",") if h.strip()
@@ -816,7 +852,7 @@ def publish_post_by_id(
                 try:
                     from app.services.image_render import render_story_image
                     # Use caption or image_prompt to generate background/context
-                    prompt_text = caption or post.image_prompt or post.topic or "Square background"
+                    prompt_text = str(caption or post.image_prompt or post.topic or "Square background")
                     filename = f"{uuid4()}.png"
                     public_url = render_story_image(prompt_text, filename, style=body.render_style or "minimal_dark")
                     image_url = public_url
@@ -840,7 +876,7 @@ def publish_post_by_id(
                 # Determine possible local path for the image
                 abs_candidate = None
                 if getattr(post, "image_path", None):
-                    p = Path(post.image_path)
+                    p = Path(str(post.image_path))
                     if not p.is_absolute():
                         p = BASE_DIR / p
                     if p.exists():
@@ -884,15 +920,15 @@ def publish_post_by_id(
             story_result = publish_story(image_url=image_url, ig_user_id=ig_user_id, access_token=access_token)
             # If error returned
             if isinstance(story_result, dict) and story_result.get("error"):
-                err = story_result.get("error")
+                err = story_result.get("error") or {}
                 # Save failure to DB and return clear message
                 post.status = PostStatus.FAILED  # type: ignore[assignment]
-                post.error_message = str(err.get("message", err))
+                post.error_message = str(err.get("message", err) if isinstance(err, dict) else err)
                 db.add(post)
                 db.commit()
                 raise HTTPException(
                     status_code=500,
-                    detail=f"Story container oluşturulamadı: {err.get('message', err)}",
+                    detail=f"Story container oluşturulamadı: {err.get('message', err) if isinstance(err, dict) else err}",
                 )
 
             # story_result expected: {'creation_id':..., 'creation_response':..., 'publish_response':..., 'publish_id': ...}
@@ -1004,7 +1040,7 @@ def list_posts(
         hashtags_str = post.hashtags
         if hashtags_str:
             try:
-                hashtags_list = json.loads(hashtags_str)
+                hashtags_list = json.loads(str(hashtags_str))
                 hashtags_str = (
                     ", ".join(hashtags_list)
                     if isinstance(hashtags_list, list)
@@ -1015,20 +1051,20 @@ def list_posts(
 
         result.append(
             PostDetailResponse(
-                id=post.id,
-                topic=post.topic,
-                caption=post.caption,
-                hashtags=hashtags_str,
-                image_prompt=post.image_prompt,
-                image_url=_public_image_url(post.image_url),
+                id=cast(int, post.id),
+                topic=str(post.topic) if post.topic else None,
+                caption=str(post.caption) if post.caption else None,
+                hashtags=str(hashtags_str) if hashtags_str else None,
+                image_prompt=str(post.image_prompt) if post.image_prompt else None,
+                image_url=_public_image_url(str(post.image_url) if post.image_url else None),
                 type=post.type.value if post.type else "post",
                 status=post.status.value if post.status else "draft",
-                created_at=post.created_at,
-                scheduled_at=post.scheduled_at,
-                published_at=post.published_at,
-                ig_post_id=post.ig_post_id,
-                error_message=post.error_message,
-                account_id=post.account_id,
+                created_at=cast(datetime, post.created_at),
+                scheduled_at=cast(datetime | None, post.scheduled_at),
+                published_at=cast(datetime | None, post.published_at),
+                ig_post_id=str(post.ig_post_id) if post.ig_post_id else None,
+                error_message=str(post.error_message) if post.error_message else None,
+                account_id=cast(int, post.account_id) if post.account_id is not None else None,
             )
         )
 
@@ -1048,7 +1084,7 @@ def delete_post(
         raise HTTPException(status_code=404, detail=f"Post with id {post_id} not found")
     # Attempt to delete remote image if exists and points to uploads/ig or known upload base
     try:
-        image_url = post.image_url
+        image_url = str(post.image_url) if post.image_url else None
         if image_url:
             try:
                 deleted = delete_remote_file(image_url)
@@ -1183,11 +1219,11 @@ def get_post(
     hashtags_str = post.hashtags
     if hashtags_str:
         try:
-            hashtags_list = json.loads(hashtags_str)
+            hashtags_list = json.loads(str(hashtags_str))
             hashtags_str = (
                 ", ".join(hashtags_list)
                 if isinstance(hashtags_list, list)
-                else hashtags_str
+                else str(hashtags_str)
             )
         except json.JSONDecodeError:
             pass
@@ -1195,18 +1231,18 @@ def get_post(
     # use normalize_image_url from app.utils
 
     return PostDetailResponse(
-        id=post.id,
-        topic=post.topic,
-        caption=post.caption,
-        hashtags=hashtags_str,
-        image_prompt=post.image_prompt,
-        image_url=_public_image_url(post.image_url),
+        id=cast(int, post.id),
+        topic=str(post.topic) if post.topic else None,
+        caption=str(post.caption) if post.caption else None,
+        hashtags=str(hashtags_str) if hashtags_str else None,
+        image_prompt=str(post.image_prompt) if post.image_prompt else None,
+        image_url=_public_image_url(str(post.image_url) if post.image_url else None),
         type=post.type.value if post.type else "post",
         status=post.status.value if post.status else "draft",
-        created_at=post.created_at,
-        scheduled_at=post.scheduled_at,
-        published_at=post.published_at,
-        ig_post_id=post.ig_post_id,
-        error_message=post.error_message,
-        account_id=post.account_id,
+        created_at=cast(datetime, post.created_at),
+        scheduled_at=cast(datetime | None, post.scheduled_at),
+        published_at=cast(datetime | None, post.published_at),
+        ig_post_id=str(post.ig_post_id) if post.ig_post_id else None,
+        error_message=str(post.error_message) if post.error_message else None,
+        account_id=cast(int, post.account_id) if post.account_id is not None else None,
     )

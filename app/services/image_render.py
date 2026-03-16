@@ -8,6 +8,7 @@ Fontlar app/assets/fonts/ içinde TTF olarak kullanılır.
 import os
 import re
 from pathlib import Path
+from typing import Any, cast
 from uuid import uuid4
 
 from PIL import Image, ImageDraw, ImageFont
@@ -145,11 +146,11 @@ def _split_line_runs(line: str) -> list[tuple[str, bool]]:
         elif current_emoji == em:
             current.append(c)
         else:
-            runs.append(("".join(current), current_emoji))
+            runs.append(("".join(current), current_emoji if current_emoji is not None else False))
             current = [c]
             current_emoji = em
     if current:
-        runs.append(("".join(current), current_emoji))
+        runs.append(("".join(current), current_emoji if current_emoji is not None else False))
     return runs
 
 
@@ -379,7 +380,7 @@ def render_image(
         new_w = max(1, int(img_w * scale))
         new_h = max(1, int(img_h * scale))
         img_resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-        canvas = Image.new("RGBA", (width, height), (0, 0, 0, 255))
+        canvas = Image.new("RGBA", (width, height), cast(Any, (0, 0, 0, 255)))
         paste_x = (width - new_w) // 2
         paste_y = (height - new_h) // 2
         canvas.paste(img_resized, (paste_x, paste_y))
@@ -387,7 +388,7 @@ def render_image(
     else:
         img = img.resize((width, height), Image.Resampling.LANCZOS)
 
-    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    overlay = Image.new("RGBA", img.size, cast(Any, (0, 0, 0, 0)))
     draw = ImageDraw.Draw(overlay)
 
     # Görselde etiket (#hashtag) olmasın; sadece ana metin
@@ -686,8 +687,8 @@ def render_image(
         stroke_w_local = 2 if target == "story" else max(3, int(theme.get("stroke_width", 2)))
     else:
         overlay_color = theme.get("overlay_color", (0, 0, 0, 140))
-        text_color_local = theme.get("text_color")
-        signature_color_local = theme.get("signature_color")
+        text_color_local = theme.get("text_color", (255, 255, 255))
+        signature_color_local = theme.get("signature_color", (220, 220, 220))
         stroke_w_local = theme.get("stroke_width", 2)
     # Removed translucent background box per user request: only draw text (keep stroke/shadow for contrast)
     # Previously: draw.rectangle([(box_x0, box_y0), (box_x1, box_y1)], fill=overlay_color)
@@ -701,7 +702,7 @@ def render_image(
         width,
         text_center_y,
         text_color_local,
-        theme.get("shadow_color"),
+        theme.get("shadow_color") or (0, 0, 0),
         emoji_font=emoji_font,
         stroke_width=stroke_w_local,
     )
@@ -809,13 +810,13 @@ def render_story_image(text: str, output_filename: str | None = None, style: str
         new_h = max(1, int(img_h * scale))
         img_resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
         # center image on canvas (no cropping), allowing vertical margins if any
-        canvas = Image.new("RGBA", (width, height), (0, 0, 0, 255))
+        canvas = Image.new("RGBA", (width, height), cast(Any, (0, 0, 0, 255)))
         paste_x = (width - new_w) // 2
         paste_y = (height - new_h) // 2
         canvas.paste(img_resized, (paste_x, paste_y))
 
         # Prepare drawing layers
-        overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+        overlay = Image.new("RGBA", canvas.size, cast(Any, (0, 0, 0, 0)))
         draw = ImageDraw.Draw(overlay)
 
         # Clean text
@@ -931,7 +932,7 @@ def render_story_image(text: str, output_filename: str | None = None, style: str
         text_layer_w = CONTENT_MAX_WIDTH
         max_box_inner_h = box_h - BOX_PADDING * 2
         text_layer_h = max_box_inner_h
-        text_layer = Image.new("RGBA", (text_layer_w, text_layer_h), (0, 0, 0, 0))
+        text_layer = Image.new("RGBA", (text_layer_w, text_layer_h), cast(Any, (0, 0, 0, 0)))
         tdraw = ImageDraw.Draw(text_layer)
         ty = 0
         for ln in chosen_lines:
@@ -1056,7 +1057,7 @@ def make_story_from_post(image_path_or_url: str, output_filename: str | None = N
                 col = tuple(int(s, 16) for s in (solid_color.lstrip("#")[0:2], solid_color.lstrip("#")[2:4], solid_color.lstrip("#")[4:6]))
             except Exception:
                 col = (17, 17, 17)
-            bg = Image.new("RGBA", (width, height), col + (255,))
+            bg = Image.new("RGBA", (width, height), cast(Any, col + (255,)))
         else:
             # blur mode: create cover background from source (may crop here), then blur
             scale = max(width / src_w, height / src_h)
@@ -1073,7 +1074,7 @@ def make_story_from_post(image_path_or_url: str, output_filename: str | None = N
                 pass
 
         # Prepare final canvas and paste background
-        canvas = Image.new("RGBA", (width, height), (0, 0, 0, 255))
+        canvas = Image.new("RGBA", (width, height), cast(Any, (0, 0, 0, 255)))
         # If bg smaller (unlikely), center it
         canvas.paste(bg, (0, 0))
 
@@ -1175,7 +1176,16 @@ def generate_story_image_from_post(image_path_or_url: str, output_filename: str 
     tmp_src = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     try:
         if str(image_path_or_url).startswith("http"):
-            r = requests.get(image_path_or_url, timeout=30)
+            # R2 vb. doğrudan URL ile 400 dönebilir; presigned URL kullan
+            download_url = image_path_or_url
+            try:
+                from app.services import r2_storage
+                presigned = r2_storage.generate_presigned_get_from_url(image_path_or_url, expires=60)
+                if presigned:
+                    download_url = presigned
+            except Exception:
+                pass
+            r = requests.get(download_url, timeout=30)
             r.raise_for_status()
             tmp_src.write(r.content)
             tmp_src.flush()
@@ -1193,7 +1203,7 @@ def generate_story_image_from_post(image_path_or_url: str, output_filename: str 
                 col = tuple(int(s, 16) for s in (solid_color.lstrip("#")[0:2], solid_color.lstrip("#")[2:4], solid_color.lstrip("#")[4:6]))
             except Exception:
                 col = (17, 17, 17)
-            bg = Image.new("RGBA", (width, height), col + (255,))
+            bg = Image.new("RGBA", (width, height), cast(Any, col + (255,)))
         else:
             scale = max(width / src_w, height / src_h)
             new_w = max(1, int(src_w * scale))
@@ -1208,7 +1218,7 @@ def generate_story_image_from_post(image_path_or_url: str, output_filename: str 
                 pass
 
         # Compose canvas
-        canvas = Image.new("RGBA", (width, height), (0, 0, 0, 255))
+        canvas = Image.new("RGBA", (width, height), cast(Any, (0, 0, 0, 255)))
         canvas.paste(bg, (0, 0))
 
         # Foreground: fit post into max 1080x1080 without cropping (scale down if necessary)

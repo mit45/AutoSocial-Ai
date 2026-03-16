@@ -16,6 +16,7 @@ from app.services.content_ai import (
     generate_hashtags,
     generate_image_prompt,
     generate_image_png_bytes,
+    shorten_caption_for_image,
 )
 from app.services.storage_service import (
     save_png_bytes_to_generated,
@@ -77,7 +78,7 @@ def regen_post(post_id: int):
         signature = "ince düşlerim"
         rel_final, abs_final = render_image(
             background_path=str(background_full),
-            text=caption,
+            text=shorten_caption_for_image(caption, max_chars=220),
             signature=signature,
             style="minimal_dark",
             target="square",

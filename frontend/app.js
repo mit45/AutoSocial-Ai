@@ -204,10 +204,16 @@
       actions.push(
         '<button type="button" class="btn btn-secondary btn-approve" data-id="' +
           post.id +
-          '">Onayla</button>'
+          '">Onayla</button>',
+        '<button type="button" class="btn btn-success btn-publish-post" data-id="' +
+          post.id +
+          '">Yayınla (Post)</button>',
+        '<button type="button" class="btn btn-outline-success btn-publish-story" data-id="' +
+          post.id +
+          '">Yayınla (Story)</button>'
       );
     }
-    // Show publish buttons for approved posts — and also for failed posts so user can retry publishing.
+    // Show publish buttons for approved and failed posts (draft already has them above via republish).
     if (post.status === "approved" || post.status === "failed") {
       actions.push(
         '<button type="button" class="btn btn-success btn-publish-post" data-id="' +
@@ -399,6 +405,7 @@
           })
           .catch(function (err) {
             alert(err.message || "Yayınlama başarısız.");
+            loadPosts(currentStatusFilter);
           })
           .finally(function () {
             btn.disabled = false;
@@ -437,7 +444,7 @@
         }
         btn.disabled = true;
         let publishPromisePost;
-        if (status === "failed") {
+        if (status === "failed" || status === "draft") {
           publishPromisePost = postJson(API_BASE + "/posts/" + id + "/republish", scheduledAt ? { post_type: "post", scheduled_at: scheduledAt } : { post_type: "post" });
         } else {
           publishPromisePost = postJson(API_BASE + "/publish/" + id, scheduledAt ? { post_type: "post", scheduled_at: scheduledAt } : { post_type: "post" });
@@ -455,6 +462,7 @@
           })
           .catch(function (err) {
             alert(err.message || "Yayınlama başarısız.");
+            loadPosts(currentStatusFilter);
           })
           .finally(function () {
             btn.disabled = false;
@@ -488,7 +496,7 @@
         }
         btn.disabled = true;
         let publishPromiseStory;
-        if (status === "failed") {
+        if (status === "failed" || status === "draft") {
           publishPromiseStory = postJson(API_BASE + "/posts/" + id + "/republish", scheduledAtStory ? { post_type: "story", scheduled_at: scheduledAtStory } : { post_type: "story" });
         } else {
           publishPromiseStory = postJson(API_BASE + "/publish/" + id, scheduledAtStory ? { post_type: "story", scheduled_at: scheduledAtStory } : { post_type: "story" });
@@ -506,6 +514,7 @@
           })
           .catch(function (err) {
             alert(err.message || "Story paylaşımı başarısız.");
+            loadPosts(currentStatusFilter);
           })
           .finally(function () {
             btn.disabled = false;
@@ -832,12 +841,8 @@
     storyPublishLabel.style.color = "var(--text-muted)";
     storyPublishLabel.appendChild(storyPublishChk);
     storyPublishLabel.appendChild(document.createTextNode("Otomatik yayınla (Story)"));
-    // Initially disable publish options if auto approval not checked
-    postPublishChk.disabled = !autoChk.checked;
-    storyPublishChk.disabled = !autoChk.checked;
+    // Otomatik yayınla her zaman seçilebilir (aktif); kaydedilen değer yüklenince korunur
     autoChk.addEventListener("change", function () {
-      postPublishChk.disabled = !autoChk.checked;
-      storyPublishChk.disabled = !autoChk.checked;
       if (!autoChk.checked) {
         postPublishChk.checked = false;
         storyPublishChk.checked = false;

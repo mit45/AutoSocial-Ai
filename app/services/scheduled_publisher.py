@@ -75,7 +75,7 @@ def run_scheduled_publish():
 
                 ig_user_id = account.ig_user_id
                 access_token = account.access_token
-                env_token = os.getenv("INSTAGRAM_ACCESS_TOKEN")
+                env_token = os.getenv("INSTAGRAM_ACCESS_TOKEN", None)
                 if env_token:
                     access_token = env_token
 
@@ -109,7 +109,8 @@ def run_scheduled_publish():
                     hashtags_list = []
                     if post.hashtags:
                         try:
-                            hashtags_list = json.loads(post.hashtags)
+                            raw_hashtags = str(post.hashtags)
+                            hashtags_list = json.loads(raw_hashtags)
                         except Exception:
                             hashtags_list = [h.strip() for h in str(post.hashtags).split(",") if h.strip()]
                     try:
