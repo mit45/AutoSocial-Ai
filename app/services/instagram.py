@@ -590,7 +590,7 @@ def get_media_list(ig_user_id: str, access_token: str | None = None, limit: int 
         return []
 
 
-def _insights_metrics_for_media_type(media_type: str) -> str | None:
+def _insights_metrics_for_media_type(media_type: str) -> tuple[str, str | None] | None:
     """
     Instagram Graph API: media type'a göre geçerli metrikleri döndürür.
     CAROUSEL_ALBUM için insights yok (API dokümantasyonu). STORY sadece 24 saat.
@@ -599,11 +599,19 @@ def _insights_metrics_for_media_type(media_type: str) -> str | None:
     if kind in ("CAROUSEL_ALBUM", "CAROUSEL"):
         return None  # Insights not available for album media
     if kind in ("STORIES", "STORY"):
-        return "reach,replies,impressions"
+        # v22+ (and later) prefers 'views'; impressions may be unsupported for newer media.
+        primary = "reach,replies,views"
+        fallback = "reach,replies,impressions"
+        return (primary, fallback)
     if kind == "REELS":
-        return "reach,likes,comments,saved,views"
+        primary = "reach,likes,comments,saved,views"
+        # Older docs had plays; keep as fallback only if views is rejected for some reason.
+        fallback = "reach,likes,comments,saved,plays"
+        return (primary, fallback)
     # IMAGE, VIDEO (feed posts)
-    return "reach,likes,comments,saved,impressions"
+    primary = "reach,likes,comments,saved,views"
+    fallback = "reach,likes,comments,saved,impressions"
+    return (primary, fallback)
 
 
 def get_media_insights(media_id: str, access_token: str | None = None, media_type: str = "IMAGE") -> dict:
@@ -613,8 +621,8 @@ def get_media_insights(media_id: str, access_token: str | None = None, media_typ
     """
     if access_token is None:
         access_token = ACCESS_TOKEN
-    metrics = _insights_metrics_for_media_type(media_type)
-    if metrics is None:
+    metric_pair = _insights_metrics_for_media_type(media_type)
+    if metric_pair is None:
         try:
             print(f"[instagram.get_media_insights] media_id={media_id} media_type={media_type}: insights not available for carousel album")
         except Exception:
@@ -622,15 +630,31 @@ def get_media_insights(media_id: str, access_token: str | None = None, media_typ
         return {}
 
     url = f"{INSTAGRAM_API}/{media_id}/insights"
-    params = {"access_token": access_token, "metric": metrics}
     try:
-        r = requests.get(url, params=params, timeout=15)
-        body = r.json() if r.text else {}
+        primary_metrics, fallback_metrics = metric_pair
 
-        if r.status_code != 200:
+        def _call(metric_str: str) -> tuple[int, dict]:
+            r = requests.get(
+                url, params={"access_token": access_token, "metric": metric_str}, timeout=15
+            )
+            body = r.json() if r.text else {}
+            return r.status_code, body
+
+        status, body = _call(primary_metrics)
+        if status != 200 and fallback_metrics:
+            # If primary failed, try fallback once (useful across API versions).
             try:
                 print(
-                    f"[instagram.get_media_insights] API error media_id={media_id} status={r.status_code} response={body}"
+                    f"[instagram.get_media_insights] primary failed media_id={media_id} status={status} metric={primary_metrics} response={body}"
+                )
+            except Exception:
+                pass
+            status, body = _call(fallback_metrics)
+
+        if status != 200:
+            try:
+                print(
+                    f"[instagram.get_media_insights] API error media_id={media_id} status={status} media_type={media_type} metrics={primary_metrics} fallback={fallback_metrics} response={body}"
                 )
             except Exception:
                 pass

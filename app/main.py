@@ -21,6 +21,8 @@ from app.database import SessionLocal, Base, engine
 from app.models import Account
 from app.config import OPENAI_API_KEY
 from app.services.scheduler_api import run_scheduled_publish, run_automation_check
+from app.services.analytics_service import refresh_pipeline, build_posts_for_feedback
+from app.services.feedback_loop_engine import update_learning_state_from_posts
 import threading
 import os
 import errno
@@ -224,12 +226,60 @@ def start_scheduler():
         t.daemon = True
         t.start()
 
-    t = threading.Timer(5.0, check_scheduled_posts)
-    t.daemon = True
-    # Acquire lock before starting the background scheduler loop
-    if acquire_scheduler_lock():
+    def refresh_instagram_analytics():
+        """
+        Background job: her saatte bir Instagram analytics pipeline'ını ve öğrenme durumunu günceller.
+        """
+        try:
+            db = SessionLocal()
+            try:
+                account = db.query(Account).first()
+                if not account:
+                    return
+                ig_user_id = str(account.ig_user_id) if account.ig_user_id else ""
+                raw_token = os.getenv("INSTAGRAM_ACCESS_TOKEN") or account.access_token
+                access_token = str(raw_token) if raw_token else None
+                if not access_token or not ig_user_id:
+                    print("[ANALYTICS] Instagram token veya kullanıcı ID eksik; analytics refresh atlandı.")
+                    return
+
+                # 1) Pipeline: medya + insights cache'ini güncelle
+                try:
+                    stats = refresh_pipeline(ig_user_id, access_token, full_sync=False)
+                    print(f"[ANALYTICS] Pipeline refresh: {stats}")
+                except Exception as e:
+                    print(f"[ANALYTICS] refresh_pipeline error: {e}")
+
+                # 2) Feedback loop: cached veriden öğrenme durumunu güncelle
+                try:
+                    posts = build_posts_for_feedback()
+                    if posts:
+                        learned = update_learning_state_from_posts(posts)
+                        print(f"[ANALYTICS] Learning update: posts={len(posts)} state_meta={learned.get('learning_state', {}).get('meta')}")
+                except Exception as e:
+                    print(f"[ANALYTICS] feedback update error: {e}")
+            finally:
+                db.close()
+        except Exception as e:
+            import traceback
+
+            print(f"[ANALYTICS] Background analytics error: {e}")
+            print(traceback.format_exc())
+
+        t = threading.Timer(3600.0, refresh_instagram_analytics)
+        t.daemon = True
         t.start()
+
+    scheduler_timer = threading.Timer(5.0, check_scheduled_posts)
+    scheduler_timer.daemon = True
+    analytics_timer = threading.Timer(10.0, refresh_instagram_analytics)
+    analytics_timer.daemon = True
+    # Acquire lock before starting the background scheduler/analytics loops
+    if acquire_scheduler_lock():
+        scheduler_timer.start()
+        analytics_timer.start()
         print("[SCHEDULED] Background task started (checks every 30 seconds)")
+        print("[ANALYTICS] Background analytics started (runs every 3600 seconds)")
     else:
         print("[SCHEDULED] Background task not started (lock not acquired).")
     # ensure lock removal on shutdown

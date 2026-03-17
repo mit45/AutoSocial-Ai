@@ -49,6 +49,8 @@ from app.services.instagram import (
     get_media_insights,
     get_media_comments,
 )
+from app.services.analytics_service import get_cached_media_with_insights
+from app.services.feedback_loop_engine import load_learning_state
 from app.services.scheduler import next_post_time
 from app.services.scheduler_api import run_scheduled_publish
 import json
@@ -211,16 +213,45 @@ def get_instagram_published(account_id: int | None = None, db: Session = Depends
         media_type = m.get("media_type", "IMAGE") or "IMAGE"
         insights = get_media_insights(mid_str, access_token, media_type)
         comments = get_media_comments(mid_str, access_token, limit=30)
-        result.append({
-            "id": mid,
-            "caption": m.get("caption"),
-            "media_type": media_type,
-            "media_url": m.get("media_url"),
-            "timestamp": m.get("timestamp"),
-            "insights": insights,
-            "comments": comments,
-        })
+        result.append(
+            {
+                "id": mid,
+                "caption": m.get("caption"),
+                "media_type": media_type,
+                "media_url": m.get("media_url"),
+                "timestamp": m.get("timestamp"),
+                "insights": insights,
+                "comments": comments,
+            }
+        )
     return {"media": result}
+
+
+@router.get("/instagram/analytics-cache")
+def get_instagram_analytics_cache(account_id: int | None = None, db: Session = Depends(get_db)):
+    """
+    Instagram istatistik paneli için: sadece SQLite cache'ten medya + insights okur.
+    Arka planda çalışan pipeline bu cache'i periyodik olarak günceller.
+    """
+    account = (
+        db.query(Account).filter(Account.id == account_id).first()
+        if account_id
+        else db.query(Account).first()
+    )
+    if not account:
+        raise HTTPException(status_code=404, detail="Hesap bulunamadı")
+    media = get_cached_media_with_insights()
+    return {"media": media}
+
+
+@router.get("/analytics/learning-state")
+def get_analytics_learning_state():
+    """
+    Instagram içerik stratejisi için kullanılan öğrenme durumunu (weights, topic_weights, best hours)
+    döndürür. Frontend, otomatik üretim ayarları altında kullanıcıya son değişiklikleri gösterebilir.
+    """
+    state = load_learning_state()
+    return state
 
 
 @router.post("/accounts", response_model=AccountRead)

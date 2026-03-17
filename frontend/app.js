@@ -127,6 +127,47 @@
     });
   }
 
+  // ——— Topic/strategy changes under automation section ———
+  const topicChangesEl = document.getElementById("topic-changes");
+  if (topicChangesEl) {
+    getJson(API_BASE + "/analytics/learning-state")
+      .then(function (state) {
+        if (!state || typeof state !== "object") return;
+        const meta = state.meta || {};
+        const topicWeights = state.topic_weights || {};
+        const keys = Object.keys(topicWeights || {});
+        if (!keys.length) {
+          topicChangesEl.textContent = "";
+          return;
+        }
+        // En düşük ağırlıklı 3 konuyu bul
+        const sorted = keys
+          .map(function (k) {
+            return { key: k, w: Number(topicWeights[k] || 0) };
+          })
+          .sort(function (a, b) {
+            return a.w - b.w;
+          });
+        var worst = sorted.slice(0, 3).map(function (x) {
+          return x.key;
+        });
+        if (!worst.length) {
+          topicChangesEl.textContent = "";
+          return;
+        }
+        var ts = meta.updated_at || "";
+        var when = ts ? "Son analizde" : "Analiz sonucunda";
+        topicChangesEl.textContent =
+          when +
+          " düşük performans gösteren konular daha az kullanılacak: " +
+          worst.join(", ") +
+          ".";
+      })
+      .catch(function () {
+        // Sessizce yut; bu alan sadece bilgilendirme amaçlı.
+      });
+  }
+
   if (formGenerate) {
     formGenerate.addEventListener("submit", function (e) {
       e.preventDefault();
