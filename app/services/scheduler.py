@@ -1,4 +1,5 @@
 import random
+import re
 from datetime import datetime, timedelta, timezone
 from typing import cast
 
@@ -14,12 +15,14 @@ from app.services.image_backend import generate_image_url, generate_image_bytes,
 from app.services.monetization import attach_affiliate
 from app.services.instagram import publish_image as ig_publish_image, publish_story as ig_publish_story
 from app.database import SessionLocal
-from app.models import AutomationSetting, Account, Post, PostStatus
+from app.models import AutomationSetting, Account, Post, PostStatus, PostType
 from app.services.storage_service import save_png_bytes_to_generated, upload_to_remote_server
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from app.config import BASE_URL
 import json, os
+from app.services.reels_engine import generate_reel_structure, generate_and_publish_reel
+from app.services.feedback_loop_engine import load_learning_state
 
 
 def next_post_time():
@@ -122,8 +125,83 @@ def run_automation_check():
             except Exception:
                 pass
 
-            def generate_draft_for_setting(auto_approve: bool = False, auto_publish_post: bool = False, auto_publish_story: bool = False, recent_threshold_minutes: int | None = None):
+            def generate_draft_for_setting(
+                auto_approve: bool = False,
+                auto_publish_post: bool = False,
+                auto_publish_story: bool = False,
+                auto_publish_reels: bool = False,
+                recent_threshold_minutes: int | None = None,
+            ):
+                def build_reel_visual_prompts(topic_text: str, base_prompt: str, count: int = 3) -> list[str]:
+                    """
+                    Build topic-grounded prompts to avoid irrelevant abstract visuals.
+                    """
+                    t = (topic_text or "").strip()
+                    # light keyword extraction from topic
+                    kws = [w for w in re.findall(r"[a-zA-ZçğıöşüÇĞİÖŞÜ0-9]+", t.lower()) if len(w) >= 3]
+                    kw_text = ", ".join(kws[:6]) if kws else t
+
+                    tl = t.lower()
+                    is_space = any(k in tl for k in ["uzay", "mars", "galaksi", "astronot", "roket", "yıldız", "evren"])
+                    is_tech = any(k in tl for k in ["teknoloji", "yapay", "zeka", "kod", "yazılım", "robot", "otomasyon"])
+                    is_science = any(k in tl for k in ["bilim", "fizik", "kimya", "biyoloji", "nörobilim"])
+
+                    subject_rules = (
+                        f"Subject must clearly represent this topic: '{t}'. "
+                        f"Visual cues and elements related to: {kw_text}. "
+                        "Do not generate unrelated generic abstract wallpaper."
+                    )
+                    # Global hard negatives (most common failure patterns)
+                    negatives = (
+                        "NEGATIVE: no flowers, no petals, no botanical ornaments, "
+                        "no decorative swirls, no vintage frame, no abstract poster card, "
+                        "no central blank rectangle, no typography, no watermark."
+                    )
+
+                    domain_directive = ""
+                    if is_space:
+                        domain_directive = (
+                            "SPACE/MARS DIRECTIVE: include realistic space elements such as Mars surface, "
+                            "planet horizon, stars, nebula, astronaut suit, rocket or spacecraft details. "
+                            "Color palette should be cosmic (deep navy, black, red-orange Mars dust). "
+                            "Absolutely avoid floral or wedding-like decorative style."
+                        )
+                    elif is_tech:
+                        domain_directive = (
+                            "TECH DIRECTIVE: include concrete technology cues (circuit patterns, data streams, "
+                            "servers, robotic elements, modern UI-like light structures), clean futuristic look."
+                        )
+                    elif is_science:
+                        domain_directive = (
+                            "SCIENCE DIRECTIVE: include laboratory/science visual cues (equations, particles, "
+                            "experiment setups, scientific diagrams) in a realistic modern style."
+                        )
+                    else:
+                        domain_directive = (
+                            "GENERAL DIRECTIVE: include concrete objects/scenes directly tied to the topic, "
+                            "avoid purely ornamental abstraction."
+                        )
+
+                    style = (
+                        "Vertical 9:16, cinematic, high detail, clean composition, "
+                        "no text, no letters, no frame/border, no poster mockup, no watermark."
+                    )
+                    prompts: list[str] = []
+                    for i in range(max(1, int(count))):
+                        variant = (
+                            f"Variant {i+1}: different camera angle and composition, "
+                            "keep same topic semantics and recognizable objects."
+                        )
+                        prompts.append(
+                            f"{base_prompt}. {subject_rules} {domain_directive} {negatives} {variant} {style}"
+                        )
+                    return prompts
+
                 # Farklı tür ve konu; son 8 gönderinin konuları hariç tutulur, güncel trendlerden seçilir
+                if auto_publish_reels:
+                    # Keep atomic generation: from this run, publish only reels.
+                    auto_publish_post = False
+                    auto_publish_story = False
                 recent_posts = (
                     db.query(Post.topic)
                     .filter(Post.account_id == s.account_id)
@@ -188,7 +266,22 @@ def run_automation_check():
                     hashtags = []
                 try:
                     image_prompt = generate_image_prompt(topic)
-                    png_bytes = generate_image_bytes(image_prompt)
+                    if auto_publish_reels:
+                        reel_prompts = build_reel_visual_prompts(topic, image_prompt, count=3)
+                        first_bytes = generate_image_bytes(reel_prompts[0])
+                        png_bytes = first_bytes
+                        reel_backgrounds = [first_bytes]
+                        # Reels: at least 3 topic-grounded visuals for scene variety.
+                        for rp in reel_prompts[1:]:
+                            try:
+                                reel_backgrounds.append(generate_image_bytes(rp))
+                            except Exception:
+                                reel_backgrounds.append(first_bytes)
+                        # store first prompt as post prompt trace
+                        image_prompt = reel_prompts[0]
+                    else:
+                        png_bytes = generate_image_bytes(image_prompt)
+                        reel_backgrounds = [png_bytes]
                     # Do not persist the text-less background to storage/R2.
                     # Render from bytes (temporary file handled by render_from_bytes).
                     rel_bg = None
@@ -196,17 +289,43 @@ def run_automation_check():
                 except Exception:
                     public_bg = "https://images.pexels.com/photos/1032650/pexels-photo-1032650.jpeg"
                     rel_bg = None
+                    png_bytes = b""
+                    reel_backgrounds = [png_bytes]
+                # Reels plan used for cover text & video scenes
+                reel_structure = None
+                if auto_publish_reels:
+                    try:
+                        learning_state = load_learning_state()
+                    except Exception:
+                        learning_state = None
+                    try:
+                        reel_structure = generate_reel_structure(
+                            topic=topic,
+                            content_type=content_type,
+                            caption=caption,
+                            learning_state=learning_state,
+                        )
+                    except Exception as e:
+                        reel_structure = None
+                        print(f"[AUTOMATION][reels] generate_reel_structure failed: {e}")
                 # render final image (best effort)
                 public_url = public_bg
                 # If we have a temporary background file, render text on it and upload final only
                 # If we have background bytes, render final image and upload final only
                 try:
-                    image_text = shorten_caption_for_image(caption, max_chars=220)
+                    cover_text_source = caption
+                    if auto_publish_reels and isinstance(reel_structure, dict):
+                        cover_text_source = reel_structure.get("hook") or ((reel_structure.get("scenes") or [{}])[0].get("text") or caption)
+                    image_text = shorten_caption_for_image(str(cover_text_source), max_chars=220)
                     rel_final, abs_final = render_from_bytes(png_bytes, image_text, "ince düşlerim", "minimal_dark")
                     with open(abs_final, "rb") as f:
                         final_bytes = f.read()
                     filename = os.path.basename(abs_final)
-                    public_url = upload_to_remote_server(final_bytes, filename, prefix="ig/post")
+                    public_url = upload_to_remote_server(
+                        final_bytes,
+                        filename,
+                        prefix="ig/reels" if auto_publish_reels else "ig/post",
+                    )
                 except Exception:
                     public_url = public_bg
                 post = Post(
@@ -217,6 +336,7 @@ def run_automation_check():
                     image_prompt=image_prompt if "image_prompt" in locals() else None,
                     image_url=public_url,
                     status=PostStatus.APPROVED if auto_approve else PostStatus.DRAFT,
+                    type=PostType.REELS if auto_publish_reels else PostType.POST,
                     created_at=datetime.utcnow(),
                 )
                 # Second safety check (re-query just before commit to reduce race windows).
@@ -343,6 +463,74 @@ def run_automation_check():
                                     db_inner.close()
                                 except Exception:
                                     pass
+                        if auto_publish_reels:
+                            try:
+                                if not reel_structure:
+                                    reel_structure = generate_reel_structure(
+                                        topic=topic,
+                                        content_type=content_type,
+                                        caption=caption,
+                                        learning_state=load_learning_state(),
+                                    )
+                                rp = generate_and_publish_reel(
+                                    topic=topic,
+                                    content_type=content_type,
+                                    caption=caption,
+                                    background_png_bytes=png_bytes,
+                                    background_png_bytes_list=reel_backgrounds if auto_publish_reels else None,
+                                    ig_user_id=ig_user_id,
+                                    access_token=access_token,
+                                    hashtags=hashtags,
+                                    reel_structure=reel_structure,
+                                )
+
+                                db_inner = SessionLocal()
+                                try:
+                                    p2 = db_inner.query(Post).filter(Post.id == post.id).first()
+                                    if p2:
+                                        # publish_reel_graph success path typically returns publish_response.id
+                                        publish_response = (rp or {}).get("publish_response") if isinstance(rp, dict) else None
+                                        published_id = None
+                                        if isinstance(publish_response, dict):
+                                            published_id = publish_response.get("id")
+                                        published_id = published_id or (rp or {}).get("publish_id")
+
+                                        if published_id:
+                                            p2.status = PostStatus.PUBLISHED  # type: ignore[assignment]
+                                            p2.published_at = datetime.utcnow()  # type: ignore[assignment]
+                                            p2.ig_post_id = str(published_id)  # type: ignore[assignment]
+                                            p2.scheduled_at = None
+                                            p2.scheduled_at_post = None
+                                            p2.scheduled_at_story = None
+                                            print(f"[AUTOMATION] Auto-published REELS for draft id={post.id} ig_id={published_id}")
+                                        elif isinstance(rp, dict) and rp.get("error"):
+                                            p2.status = PostStatus.FAILED  # type: ignore[assignment]
+                                            err_obj = rp.get("error")
+                                            if isinstance(err_obj, (dict, list)):
+                                                p2.error_message = json.dumps(err_obj, ensure_ascii=False)
+                                            else:
+                                                p2.error_message = str(err_obj)
+                                            print(f"[AUTOMATION] Auto-publish REELS failed for draft id={post.id}: {p2.error_message}")
+                                        else:
+                                            p2.status = PostStatus.FAILED  # type: ignore[assignment]
+                                            p2.error_message = f"Unexpected reels publish response: {rp}"
+                                            print(f"[AUTOMATION] Auto-publish REELS failed for draft id={post.id}: {p2.error_message}")
+                                        db_inner.add(p2)
+                                        db_inner.commit()
+                                finally:
+                                    db_inner.close()
+                            except Exception as e:
+                                print(f"[AUTOMATION] Auto-publish REELS failed for draft id={post.id}: {e}")
+                                try:
+                                    db_inner = SessionLocal()
+                                    p2 = db_inner.query(Post).filter(Post.id == post.id).first()
+                                    if p2:
+                                        p2.status = PostStatus.FAILED  # type: ignore[assignment]
+                                        p2.error_message = str(e)
+                                        db_inner.add(p2)
+                                        db_inner.commit()
+                                finally:
+                                    db_inner.close()
                 except Exception as e:
                     print(f"[AUTOMATION] Auto-publish error: {e}")
 
@@ -376,8 +564,15 @@ def run_automation_check():
                             if not last_run_local or last_run_local < scheduled_local:
                                 auto_publish_post = bool(t.get("auto_publish_post")) if isinstance(t, dict) else False
                                 auto_publish_story = bool(t.get("auto_publish_story")) if isinstance(t, dict) else False
+                                auto_publish_reels = bool(t.get("auto_publish_reels")) if isinstance(t, dict) else False
                                 # Use 2-min recent window so consecutive slots (e.g. 01:08 and 01:10) can each generate one draft with image
-                                generate_draft_for_setting(auto_approve=auto_approve, auto_publish_post=auto_publish_post, auto_publish_story=auto_publish_story, recent_threshold_minutes=2)
+                                generate_draft_for_setting(
+                                    auto_approve=auto_approve,
+                                    auto_publish_post=auto_publish_post,
+                                    auto_publish_story=auto_publish_story,
+                                    auto_publish_reels=auto_publish_reels,
+                                    recent_threshold_minutes=2,
+                                )
                     except Exception:
                         continue
                 # done with this setting
@@ -425,7 +620,14 @@ def run_automation_check():
                             if not last_run_local or last_run_local < scheduled_dt.astimezone(local_tz):
                                 auto_publish_post = bool(item.get("auto_publish_post")) if isinstance(item, dict) else False
                                 auto_publish_story = bool(item.get("auto_publish_story")) if isinstance(item, dict) else False
-                                generate_draft_for_setting(auto_approve=auto_approve, auto_publish_post=auto_publish_post, auto_publish_story=auto_publish_story, recent_threshold_minutes=2)
+                                auto_publish_reels = bool(item.get("auto_publish_reels")) if isinstance(item, dict) else False
+                                generate_draft_for_setting(
+                                    auto_approve=auto_approve,
+                                    auto_publish_post=auto_publish_post,
+                                    auto_publish_story=auto_publish_story,
+                                    auto_publish_reels=auto_publish_reels,
+                                    recent_threshold_minutes=2,
+                                )
                     except Exception:
                         continue
                 continue

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import cast
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -1324,3 +1324,80 @@ def get_post(
         error_message=str(post.error_message) if post.error_message else None,
         account_id=cast(int, post.account_id) if post.account_id is not None else None,
     )
+
+
+@router.post("/test_reel")
+def test_reel(payload: dict = Body(...), db: Session = Depends(get_db)):
+    """
+    Debug tool:
+    - local_file_path içinden mp4 al
+    - optimize + validate
+    - R2'ye yükle
+    - Graph API ile container create -> FINISHED poll -> publish
+    """
+    from app.services.reels_engine import validate_and_optimize_reel_video_mp4_bytes
+    from app.services.instagram_reels import publish_reel_container_workflow
+
+    local_file_path = str(payload.get("local_file_path") or "").strip()
+    caption = str(payload.get("caption") or "").strip()
+    upload_prefix = str(payload.get("upload_prefix") or "ig/reels").strip()
+
+    if not local_file_path:
+        raise HTTPException(status_code=400, detail="local_file_path is required")
+
+    account = db.query(Account).first()
+    if not account:
+        raise HTTPException(status_code=400, detail="No account configured")
+
+    ig_user_id = str(payload.get("ig_user_id") or account.ig_user_id or "").strip()
+    access_token = str(payload.get("access_token") or account.access_token or "").strip()
+    if not ig_user_id or not access_token:
+        raise HTTPException(status_code=400, detail="ig_user_id or access_token missing")
+
+    base_dir = BASE_DIR.resolve()
+    allowed_roots = [
+        (base_dir / "media").resolve(),
+        (base_dir / "storage" / "generated").resolve(),
+    ]
+
+    p = Path(local_file_path).expanduser()
+    try:
+        p_res = p.resolve()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid local_file_path")
+
+    if not any(str(p_res).startswith(str(ar)) for ar in allowed_roots):
+        raise HTTPException(
+            status_code=400,
+            detail=f"local_file_path must be under: {[str(ar) for ar in allowed_roots]}",
+        )
+
+    if not p_res.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    mp4_bytes = p_res.read_bytes()
+
+    optimize = bool(payload.get("optimize", True))
+    try:
+        mp4_bytes, vinfo = validate_and_optimize_reel_video_mp4_bytes(mp4_bytes, optimize=optimize)
+        if not vinfo.get("ok"):
+            raise HTTPException(status_code=400, detail={"validation_failed": vinfo.get("reasons"), "meta": vinfo.get("meta")})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Video validation failed: {e}")
+
+    # Upload
+    filename = f"test_reel_{p_res.stem}_{uuid4().hex}.mp4"
+    video_url = upload_to_remote_server(mp4_bytes, filename, prefix=upload_prefix)
+
+    # Publish
+    res = publish_reel_container_workflow(
+        video_url=video_url,
+        caption=caption,
+        ig_user_id=ig_user_id,
+        access_token=access_token,
+        container_timeout_s=float(payload.get("container_timeout_s") or 90.0),
+    )
+
+    return {"video_url": video_url, "validation": vinfo, "result": res}

@@ -255,7 +255,9 @@
       );
     }
     // Show publish buttons for approved and failed posts (draft already has them above via republish).
-    if (post.status === "approved" || post.status === "failed") {
+    // Reels için ayrı publish akışı var; şimdilik post/story butonlarını gizliyoruz.
+    const isReel = (post.type || "").toLowerCase() === "reels";
+    if ((post.status === "approved" || post.status === "failed") && !isReel) {
       actions.push(
         '<button type="button" class="btn btn-success btn-publish-post" data-id="' +
           post.id +
@@ -361,7 +363,9 @@
                   ? "Onaylı gönderi yok."
                   : status === "published"
                     ? "Yayınlanmış gönderi yok."
-                    : "Henüz gönderi yok. Yukarıdan yeni içerik üretebilirsiniz.";
+                    : status === "failed"
+                      ? "Hata gönderisi yok."
+                      : "Henüz gönderi yok. Yukarıdan yeni içerik üretebilirsiniz.";
           }
           return;
         }
@@ -882,11 +886,25 @@
     storyPublishLabel.style.color = "var(--text-muted)";
     storyPublishLabel.appendChild(storyPublishChk);
     storyPublishLabel.appendChild(document.createTextNode("Otomatik yayınla (Story)"));
+    
+    const reelsPublishChk = document.createElement("input");
+    reelsPublishChk.type = "checkbox";
+    reelsPublishChk.className = "time-auto-publish-reels";
+    reelsPublishChk.style.margin = "0 0.25rem";
+    reelsPublishChk.checked = !!item.auto_publish_reels;
+    const reelsPublishLabel = document.createElement("label");
+    reelsPublishLabel.style.display = "inline-flex";
+    reelsPublishLabel.style.alignItems = "center";
+    reelsPublishLabel.style.gap = "0.25rem";
+    reelsPublishLabel.style.color = "var(--text-muted)";
+    reelsPublishLabel.appendChild(reelsPublishChk);
+    reelsPublishLabel.appendChild(document.createTextNode("Otomatik yayınla (Reels)"));
     // Otomatik yayınla her zaman seçilebilir (aktif); kaydedilen değer yüklenince korunur
     autoChk.addEventListener("change", function () {
       if (!autoChk.checked) {
         postPublishChk.checked = false;
         storyPublishChk.checked = false;
+        reelsPublishChk.checked = false;
       }
     });
     const countdown = document.createElement("span");
@@ -901,6 +919,7 @@
     el.appendChild(autoLabel);
     el.appendChild(postPublishLabel);
     el.appendChild(storyPublishLabel);
+    el.appendChild(reelsPublishLabel);
     el.appendChild(countdown);
     el.appendChild(btn);
     list.appendChild(el);
@@ -962,14 +981,29 @@
     storyPublishLabel.style.color = "var(--text-muted)";
     storyPublishLabel.appendChild(storyPublishChk);
     storyPublishLabel.appendChild(document.createTextNode("Otomatik yayınla (Story)"));
+    
+    const reelsPublishChk = document.createElement("input");
+    reelsPublishChk.type = "checkbox";
+    reelsPublishChk.className = "time-auto-publish-reels";
+    reelsPublishChk.style.margin = "0 0.25rem";
+    reelsPublishChk.checked = !!item.auto_publish_reels;
+    const reelsPublishLabel = document.createElement("label");
+    reelsPublishLabel.style.display = "inline-flex";
+    reelsPublishLabel.style.alignItems = "center";
+    reelsPublishLabel.style.gap = "0.25rem";
+    reelsPublishLabel.style.color = "var(--text-muted)";
+    reelsPublishLabel.appendChild(reelsPublishChk);
+    reelsPublishLabel.appendChild(document.createTextNode("Otomatik yayınla (Reels)"));
     postPublishChk.disabled = !autoChk.checked;
     storyPublishChk.disabled = !autoChk.checked;
     autoChk.addEventListener("change", function () {
       postPublishChk.disabled = !autoChk.checked;
       storyPublishChk.disabled = !autoChk.checked;
+      reelsPublishChk.disabled = !autoChk.checked;
       if (!autoChk.checked) {
         postPublishChk.checked = false;
         storyPublishChk.checked = false;
+        reelsPublishChk.checked = false;
       }
     });
     const countdown = document.createElement("span");
@@ -984,6 +1018,7 @@
     el.appendChild(autoLabel);
     el.appendChild(postPublishLabel);
     el.appendChild(storyPublishLabel);
+    el.appendChild(reelsPublishLabel);
     el.appendChild(countdown);
     el.appendChild(btn);
     list.appendChild(el);
@@ -1120,11 +1155,13 @@
       const chk = el.querySelector(".time-auto-approve");
       const postChk = el.querySelector(".time-auto-publish-post");
       const storyChk = el.querySelector(".time-auto-publish-story");
+      const reelsChk = el.querySelector(".time-auto-publish-reels");
       return {
         time: timeLabel ? (timeLabel.textContent || "").trim() : "",
         auto_approve: !!(chk && chk.checked),
         auto_publish_post: !!(postChk && postChk.checked),
         auto_publish_story: !!(storyChk && storyChk.checked),
+        auto_publish_reels: !!(reelsChk && reelsChk.checked),
       };
     });
     const weekly = Array.from(document.querySelectorAll("#automation-weekly-list .automation-time-item")).map((el) => {
@@ -1132,6 +1169,7 @@
       const chk = el.querySelector(".time-auto-approve");
       const postChk = el.querySelector(".time-auto-publish-post");
       const storyChk = el.querySelector(".time-auto-publish-story");
+      const reelsChk = el.querySelector(".time-auto-publish-reels");
       const txt = timeLabel ? (timeLabel.textContent || "").trim() : "";
       const parts = txt.split(" ");
       return {
@@ -1140,6 +1178,7 @@
         auto_approve: !!(chk && chk.checked),
         auto_publish_post: !!(postChk && postChk.checked),
         auto_publish_story: !!(storyChk && storyChk.checked),
+        auto_publish_reels: !!(reelsChk && reelsChk.checked),
       };
     });
     // attach to payload via closure trick: call inner function
