@@ -1,7 +1,52 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr, Field
+
+
+# ---------------------------------------------------------------------------
+# Auth schemas
+# ---------------------------------------------------------------------------
+
+
+class UserRegister(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=128)
+    full_name: Optional[str] = Field(default=None, max_length=255)
+
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class UserRead(BaseModel):
+    id: int
+    email: EmailStr
+    full_name: Optional[str] = None
+    role: str
+    is_active: bool
+    created_at: datetime
+    last_login_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class TokenPair(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int  # seconds
+
+
+class TokenRefresh(BaseModel):
+    refresh_token: str
+
+
+class PasswordChange(BaseModel):
+    old_password: str
+    new_password: str = Field(min_length=8, max_length=128)
 
 
 class AccountBase(BaseModel):
@@ -129,6 +174,7 @@ class RenderImageResponse(BaseModel):
 class GenerateRequest(BaseModel):
     """İçerik üretim isteği"""
 
+    account_id: Optional[int] = None  # Boş ise ilk account
     topic: Optional[str] = None  # Boş ise trend_radar'dan gelir
     post_type: Optional[str] = "post"  # post/story/reels
     render_style: Optional[str] = (

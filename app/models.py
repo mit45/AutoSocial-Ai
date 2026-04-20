@@ -1,4 +1,5 @@
 from sqlalchemy import (
+    Boolean,
     Column,
     Integer,
     String,
@@ -6,6 +7,8 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Enum as SQLEnum,
+    UniqueConstraint,
+    Index,
 )
 from datetime import datetime
 import enum
@@ -29,6 +32,32 @@ class PostType(str, enum.Enum):
     REELS = "reels"
 
 
+class UserRole(str, enum.Enum):
+    """Sistem kullanıcı rolleri."""
+
+    ADMIN = "admin"
+    USER = "user"
+
+
+class User(Base):
+    """
+    SaaS kullanıcısı. Bir kullanıcı birden fazla Instagram Account bağlayabilir.
+    Parola bcrypt hash olarak saklanır (security.hash_password).
+    """
+
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(255), nullable=False)
+    full_name = Column(String(255), nullable=True)
+    role = Column(SQLEnum(UserRole), default=UserRole.USER, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, nullable=True)
+    last_login_at = Column(DateTime, nullable=True)
+
+
 class Post(Base):
     """
     İçerik üretim/publish akışının log kaydı.
@@ -40,6 +69,9 @@ class Post(Base):
     __tablename__ = "posts"
 
     id = Column(Integer, primary_key=True, index=True)
+
+    # Sahiplik
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
 
     # İçerik bilgileri
     topic = Column(String, nullable=True)
@@ -85,14 +117,18 @@ class Post(Base):
 class Account(Base):
     """
     Instagram Business hesabı + access token bilgilerinin saklandığı tablo.
+    `access_token` Fernet ile şifreli saklanır (security.encrypt_secret).
     """
 
     __tablename__ = "accounts"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     ig_user_id = Column(String, nullable=False)
     access_token = Column(Text, nullable=False)
     niche = Column(String, nullable=False)
+    display_name = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
 
 
 class AutomationSetting(Base):
@@ -103,6 +139,7 @@ class AutomationSetting(Base):
     __tablename__ = "automation_settings"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
     enabled = Column(Integer, default=0, nullable=False)  # use 0/1
     frequency = Column(String, nullable=False, default="daily")  # daily|weekly
@@ -125,13 +162,55 @@ class AutomationSetting(Base):
 class AutomationRun(Base):
     """
     Records automation scheduler runs to prevent duplicate draft generation across processes.
-    Unique constraint on (setting_id, run_date) ensures a single claim per day per setting.
+    slot_key separates multiple daily/weekly time slots on the same calendar day.
     """
 
     __tablename__ = "automation_runs"
+    __table_args__ = (
+        UniqueConstraint("setting_id", "run_date", "slot_key", name="uq_automation_run_slot"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     setting_id = Column(Integer, ForeignKey("automation_settings.id"), nullable=False)
-    run_date = Column(String, nullable=False)  # ISO date YYYY-MM-DD
+    run_date = Column(String, nullable=False)  # ISO date YYYY-MM-DD (local calendar day)
+    slot_key = Column(String, nullable=False, default="")  # e.g. d|08:00, w|Mon|09:00, __fb__
     created_at = Column(DateTime, default=datetime.utcnow)
 
+
+class CaptionHistory(Base):
+    """
+    Üretilen caption metinlerinin izi (Post dışı akışlar ve benzerlik havuzu).
+    Örn. /api/generate-post önizlemesi; ana akışta metin zaten posts.caption içinde tutulur.
+    """
+
+    __tablename__ = "caption_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    caption = Column(Text, nullable=False)
+    topic = Column(String, nullable=True)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=True)
+    source = Column(String(64), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AuditLog(Base):
+    """
+    Kritik işlemlerin (publish, delete, settings değişimi vb.) iz kaydı.
+    Kullanıcı bazlı güvenlik ve hata ayıklama için.
+    """
+
+    __tablename__ = "audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    action = Column(String(64), nullable=False)
+    entity = Column(String(64), nullable=True)  # e.g. "post", "account"
+    entity_id = Column(String(64), nullable=True)
+    detail = Column(Text, nullable=True)
+    ip_address = Column(String(64), nullable=True)
+    user_agent = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+Index("ix_audit_logs_user_created", AuditLog.user_id, AuditLog.created_at)

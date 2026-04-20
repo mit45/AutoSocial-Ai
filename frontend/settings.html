@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AutoSocial AI — Ayarlar</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap" rel="stylesheet" />
+  <link href="styles.css" rel="stylesheet" />
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <header class="header">
+    <div class="header-inner">
+      <div class="header-brand">
+        <h1 class="logo">AutoSocial AI</h1>
+        <p class="tagline">Sistem ayarları</p>
+      </div>
+      <div class="header-actions">
+        <a href="/" class="btn btn-nav">Anasayfa</a>
+        <a href="/insights" class="btn btn-nav">Instagram İstatistikleri</a>
+        <button type="button" id="btn-logout" class="btn btn-nav" title="Çıkış">Çıkış</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="main">
+    <section class="section section-settings">
+      <h2 class="section-title">Sistem Ayarları</h2>
+      <p class="section-desc">Seçili hesap <strong>ai-tools</strong> ise tüm ayarlar (.env + DB) görünür. Diğer hesaplarda yalnızca DB alanları görünür.</p>
+      <form id="form-system-settings" class="form-automation">
+        <div id="admin-env-section" hidden>
+          <div style="margin-bottom:0.75rem; color:var(--text-muted); font-size:0.9rem;">
+            <strong>Ana-Admin Ayarları (.env)</strong>
+          </div>
+          <div class="input-grid">
+            <label>OpenAI API Key
+              <input type="text" id="setting-openai-api-key" autocomplete="off" />
+            </label>
+            <label>Instagram App ID
+              <input type="text" id="setting-instagram-app-id" autocomplete="off" />
+            </label>
+            <label>Instagram App Secret
+              <input type="text" id="setting-instagram-app-secret" autocomplete="off" />
+            </label>
+            <label>Instagram Access Token (.env)
+              <input type="text" id="setting-instagram-access-token" autocomplete="off" />
+            </label>
+            <label>Instagram User ID (.env)
+              <input type="text" id="setting-instagram-ig-user-id" autocomplete="off" />
+            </label>
+            <label>BASE_URL
+              <input type="text" id="setting-base-url" autocomplete="off" />
+            </label>
+            <label>UPLOAD_API_URL
+              <input type="text" id="setting-upload-api-url" autocomplete="off" />
+            </label>
+            <label>UPLOAD_API_KEY
+              <input type="text" id="setting-upload-api-key" autocomplete="off" />
+            </label>
+            <label>UPLOAD_BASE_URL
+              <input type="text" id="setting-upload-base-url" autocomplete="off" />
+            </label>
+            <label>R2_PUBLIC_BASE_URL
+              <input type="text" id="setting-r2-public-base-url" autocomplete="off" />
+            </label>
+          </div>
+          <hr style="margin: 1rem 0; border: 0; border-top: 1px solid var(--border);" />
+        </div>
+        <div style="margin-bottom:0.75rem; color:var(--text-muted); font-size:0.9rem;">
+          <strong id="selected-account-title">Seçili Hesap (DB)</strong>
+        </div>
+        <div class="input-grid">
+          <label>Hesap ID
+            <input type="text" id="setting-account-id" readonly />
+          </label>
+          <label>Account IG User ID (DB)
+            <input type="text" id="setting-account-ig-user-id" autocomplete="off" />
+          </label>
+          <label>Account Access Token (DB)
+            <input type="text" id="setting-account-access-token" autocomplete="off" />
+          </label>
+          <label>Niche
+            <input type="text" id="setting-account-niche" autocomplete="off" />
+          </label>
+        </div>
+        <hr style="margin: 1rem 0; border: 0; border-top: 1px solid var(--border);" />
+        <div style="margin-bottom:0.5rem; color:var(--text-muted); font-size:0.9rem;">
+          <strong>Kısa Token'dan Uzun Token Güncelleme</strong><br />
+          <span>Seçili hesabın kısa tokenini girin; sistem long-lived token alıp DB'ye kaydeder.</span>
+        </div>
+        <div class="input-grid">
+          <label>Kısa Access Token
+            <input type="text" id="setting-short-access-token" autocomplete="off" />
+          </label>
+          <label style="align-self:end;">
+            <button type="button" id="btn-exchange-token" class="btn btn-secondary">Uzun Token Al ve Kaydet</button>
+          </label>
+        </div>
+        <span id="exchange-token-message" class="message" hidden></span>
+        <div style="margin-top:0.75rem;">
+          <button type="button" id="btn-system-settings-save" class="btn btn-primary">Ayarları Kaydet</button>
+          <span id="system-settings-message" class="message" hidden></span>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <script src="/auth.js"></script>
+  <script>
+    if (window.AuthAPI && window.AuthAPI.requireAuth()) {
+      const lo = document.getElementById("btn-logout");
+      if (lo) lo.addEventListener("click", function () { window.AuthAPI.logout(); });
+    }
+  </script>
+  <script src="/assets/settings.js"></script>
+</body>
+</html>

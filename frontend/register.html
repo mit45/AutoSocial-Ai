@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kayıt Ol — AutoSocial AI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap" rel="stylesheet" />
+  <link href="/styles.css" rel="stylesheet" />
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml" />
+  <style>
+    .auth-shell { min-height: calc(100vh - 80px); display: flex; align-items: center; justify-content: center; padding: 2rem 1rem; }
+    .auth-card { width: 100%; max-width: 460px; background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); border: 1px solid var(--border); padding: 2rem 1.75rem; }
+    .auth-title { margin: 0 0 0.25rem 0; font-size: 1.5rem; font-weight: 700; }
+    .auth-sub { margin: 0 0 1.5rem 0; color: var(--text-muted); font-size: 0.9rem; }
+    .auth-field { display: block; margin-bottom: 1rem; }
+    .auth-field span { display: block; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.35rem; }
+    .auth-field input { width: 100%; padding: 0.65rem 0.8rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); font: inherit; }
+    .auth-field input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(99,102,241,0.15); }
+    .auth-hint { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem; }
+    .auth-submit { width: 100%; margin-top: 0.5rem; }
+    .auth-foot { margin-top: 1rem; text-align: center; font-size: 0.875rem; color: var(--text-muted); }
+    .auth-foot a { color: var(--accent); text-decoration: none; }
+    .auth-foot a:hover { text-decoration: underline; }
+    .auth-error { display: none; margin-top: 0.75rem; padding: 0.65rem 0.8rem; border-radius: var(--radius-sm); background: rgba(239,68,68,0.08); color: #b91c1c; font-size: 0.875rem; }
+    .auth-error.visible { display: block; }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <div class="header-inner">
+      <div class="header-brand">
+        <h1 class="logo">AutoSocial AI</h1>
+        <p class="tagline">Hesap oluştur</p>
+      </div>
+    </div>
+  </header>
+
+  <main class="auth-shell">
+    <div class="auth-card">
+      <h2 class="auth-title">Kayıt Ol</h2>
+      <p class="auth-sub">Birkaç saniyede hesap oluşturun ve paneli kullanmaya başlayın.</p>
+      <form id="register-form" novalidate>
+        <label class="auth-field">
+          <span>Ad Soyad (opsiyonel)</span>
+          <input type="text" id="full_name" name="full_name" autocomplete="name" />
+        </label>
+        <label class="auth-field">
+          <span>E-posta</span>
+          <input type="email" id="email" name="email" required autocomplete="email" />
+        </label>
+        <label class="auth-field">
+          <span>Parola</span>
+          <input type="password" id="password" name="password" required autocomplete="new-password" minlength="8" />
+          <div class="auth-hint">En az 8 karakter.</div>
+        </label>
+        <button type="submit" id="submit-btn" class="btn btn-primary auth-submit">Hesap oluştur</button>
+        <div id="error-box" class="auth-error" role="alert"></div>
+      </form>
+      <p class="auth-foot">Zaten hesabınız var mı? <a href="/login">Giriş yap</a></p>
+    </div>
+  </main>
+
+  <script src="/auth.js"></script>
+  <script>
+    (function () {
+      if (window.AuthAPI && window.AuthAPI.getToken()) {
+        location.href = "/";
+        return;
+      }
+
+      const form = document.getElementById("register-form");
+      const btn = document.getElementById("submit-btn");
+      const err = document.getElementById("error-box");
+
+      form.addEventListener("submit", function (e) {
+        e.preventDefault();
+        err.classList.remove("visible");
+        err.textContent = "";
+        const email = document.getElementById("email").value.trim();
+        const password = document.getElementById("password").value;
+        const fullName = document.getElementById("full_name").value.trim();
+        if (!email || !password) return;
+        if (password.length < 8) {
+          err.textContent = "Parola en az 8 karakter olmalı.";
+          err.classList.add("visible");
+          return;
+        }
+        btn.disabled = true;
+        btn.textContent = "Oluşturuluyor...";
+        window.AuthAPI.register(email, password, fullName || null)
+          .then(function () { location.href = "/"; })
+          .catch(function (e) {
+            err.textContent = (e && e.message) || "Kayıt başarısız.";
+            err.classList.add("visible");
+          })
+          .finally(function () {
+            btn.disabled = false;
+            btn.textContent = "Hesap oluştur";
+          });
+      });
+    })();
+  </script>
+</body>
+</html>

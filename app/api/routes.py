@@ -1,5 +1,7 @@
 import os
 import random
+import re
+import requests
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
@@ -26,12 +28,12 @@ from app.schemas import (
 from app.models import PostStatus, PostType
 from app.services.trend_radar import get_trending_topics, get_next_topic_and_type
 from app.services.content_ai import (
-    generate_caption,
     generate_hashtags,
     format_post_text,
     generate_image_prompt,
     shorten_caption_for_image,
 )
+from app.services.content_uniqueness import generate_caption_deduped, record_caption_history
 from app.services.image_backend import generate_image_url, generate_image_bytes, render_from_bytes
 import tempfile
 from app.services.storage_service import (
@@ -51,13 +53,83 @@ from app.services.instagram import (
 )
 from app.services.analytics_service import get_cached_media_with_insights
 from app.services.feedback_loop_engine import load_learning_state
+from app.services.content_engagement_boost import load_engagement_ui_for_api, prepare_engagement_for_topic
 from app.services.scheduler import next_post_time
 from app.services.scheduler_api import run_scheduled_publish
 import json
 from app.services import r2_storage
 
+from app.api.deps import get_current_user
+from app.security import decrypt_secret, encrypt_secret, mask_secret
+
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-router = APIRouter()
+# Tüm /api/* endpoint'leri JWT zorunlu. Sadece /api/auth/* publictir ve ayrı router'dadır.
+router = APIRouter(dependencies=[Depends(get_current_user)])
+ENV_PATH = BASE_DIR / ".env"
+
+
+def _account_token(account) -> str:
+    """DB'deki (şifreli) access_token'ı çözüp düz metin döndürür."""
+    if not account:
+        return ""
+    raw = getattr(account, "access_token", None)
+    if not raw:
+        return ""
+    dec = decrypt_secret(raw) if isinstance(raw, str) else raw
+    return str(dec or "")
+
+
+def _read_env_map(path: Path) -> dict[str, str]:
+    data: dict[str, str] = {}
+    if not path.exists():
+        return data
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return data
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        data[k.strip()] = v.strip()
+    return data
+
+
+def _upsert_env_values(path: Path, values: dict[str, str]) -> None:
+    """
+    Minimal .env updater:
+    - existing key=value satırlarını günceller
+    - bulunmayan key'leri dosya sonuna ekler
+    """
+    current_lines: list[str] = []
+    if path.exists():
+        try:
+            current_lines = path.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            current_lines = []
+
+    remaining = dict(values)
+    key_re = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=")
+    out_lines: list[str] = []
+    for line in current_lines:
+        m = key_re.match(line)
+        if not m:
+            out_lines.append(line)
+            continue
+        key = m.group(1)
+        if key in remaining:
+            out_lines.append(f"{key}={remaining.pop(key)}")
+        else:
+            out_lines.append(line)
+
+    if remaining:
+        if out_lines and out_lines[-1].strip() != "":
+            out_lines.append("")
+        for k, v in remaining.items():
+            out_lines.append(f"{k}={v}")
+
+    path.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
 
 
 def _public_image_url(u: str | None, expires: int = 300) -> str | None:
@@ -198,7 +270,7 @@ def get_instagram_published(account_id: int | None = None, db: Session = Depends
     if not account:
         raise HTTPException(status_code=404, detail="Hesap bulunamadı")
     ig_user_id = str(account.ig_user_id) if account.ig_user_id else ""
-    raw_token = os.getenv("INSTAGRAM_ACCESS_TOKEN") or account.access_token
+    raw_token = os.getenv("INSTAGRAM_ACCESS_TOKEN") or _account_token(account)
     access_token = str(raw_token) if raw_token else None
     if not access_token or not ig_user_id:
         raise HTTPException(status_code=400, detail="Instagram token veya kullanıcı ID eksik")
@@ -249,9 +321,14 @@ def get_analytics_learning_state():
     """
     Instagram içerik stratejisi için kullanılan öğrenme durumunu (weights, topic_weights, best hours)
     döndürür. Frontend, otomatik üretim ayarları altında kullanıcıya son değişiklikleri gösterebilir.
+    engagement_ui: son başarılı araştırma/iyileştirme paketinin özetini içerir (dashboard kırmızı metin).
     """
     state = load_learning_state()
-    return state
+    out: dict = dict(state)
+    ui = load_engagement_ui_for_api()
+    if ui:
+        out["engagement_ui"] = ui
+    return out
 
 
 @router.post("/accounts", response_model=AccountRead)
@@ -261,7 +338,7 @@ def create_account(payload: AccountCreate, db: Session = Depends(get_db)):
     """
     account = Account(
         ig_user_id=payload.ig_user_id,
-        access_token=payload.access_token,
+        access_token=encrypt_secret(payload.access_token) or "",
         niche=payload.niche,
     )
     db.add(account)
@@ -278,8 +355,219 @@ def list_accounts(db: Session = Depends(get_db)):
     return db.query(Account).all()
 
 
+@router.get("/settings/system")
+def get_system_settings(account_id: int | None = None, db: Session = Depends(get_db)):
+    env_values = _read_env_map(ENV_PATH)
+    account = (
+        db.query(Account).filter(Account.id == account_id).first()
+        if account_id
+        else db.query(Account).order_by(Account.id.asc()).first()
+    )
+    is_admin = bool(account and str(account.niche or "").strip().lower() == "ai-tools")
+    env_block = {}
+    if is_admin:
+        env_block = {
+            "OPENAI_API_KEY": env_values.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY", "")),
+            "INSTAGRAM_APP_ID": env_values.get("INSTAGRAM_APP_ID", os.getenv("INSTAGRAM_APP_ID", "")),
+            "INSTAGRAM_APP_SECRET": env_values.get("INSTAGRAM_APP_SECRET", os.getenv("INSTAGRAM_APP_SECRET", "")),
+            "INSTAGRAM_ACCESS_TOKEN": env_values.get("INSTAGRAM_ACCESS_TOKEN", os.getenv("INSTAGRAM_ACCESS_TOKEN", "")),
+            # Backward/forward compatibility:
+            # canonical key in project is INSTAGRAM_USER_ID
+            "INSTAGRAM_USER_ID": env_values.get(
+                "INSTAGRAM_USER_ID",
+                env_values.get("INSTAGRAM_IG_USER_ID", os.getenv("INSTAGRAM_USER_ID", os.getenv("INSTAGRAM_IG_USER_ID", ""))),
+            ),
+            "BASE_URL": env_values.get("BASE_URL", os.getenv("BASE_URL", "")),
+            "UPLOAD_API_URL": env_values.get("UPLOAD_API_URL", os.getenv("UPLOAD_API_URL", "")),
+            "UPLOAD_API_KEY": env_values.get("UPLOAD_API_KEY", os.getenv("UPLOAD_API_KEY", "")),
+            "UPLOAD_BASE_URL": env_values.get("UPLOAD_BASE_URL", os.getenv("UPLOAD_BASE_URL", "")),
+            "R2_PUBLIC_BASE_URL": env_values.get("R2_PUBLIC_BASE_URL", os.getenv("R2_PUBLIC_BASE_URL", "")),
+        }
+    tok_plain = _account_token(account) if account else ""
+    return {
+        "is_admin": is_admin,
+        "env": env_block,
+        "account": {
+            "id": cast(int | None, account.id) if account else None,
+            "ig_user_id": str(account.ig_user_id) if account and account.ig_user_id else "",
+            # Düz metin token asla response'a yazılmaz; yalnızca maskelenmiş hali.
+            "access_token": mask_secret(tok_plain, visible=6) if tok_plain else "",
+            "access_token_set": bool(tok_plain),
+            "niche": str(account.niche) if account and account.niche else "",
+        },
+    }
+
+
+@router.post("/settings/system")
+def update_system_settings(payload: dict = Body(...), account_id: int | None = None, db: Session = Depends(get_db)):
+    env_payload = payload.get("env") if isinstance(payload, dict) else {}
+    account_payload = payload.get("account") if isinstance(payload, dict) else {}
+
+    # Determine target account (for admin privilege and update target)
+    target_aid = None
+    if isinstance(account_payload, dict):
+        target_aid = account_payload.get("id") or account_id
+    target_account = (
+        db.query(Account).filter(Account.id == target_aid).first()
+        if target_aid
+        else db.query(Account).order_by(Account.id.asc()).first()
+    )
+    is_admin = bool(target_account and str(target_account.niche or "").strip().lower() == "ai-tools")
+
+    # .env update (admin only)
+    allowed_env = [
+        "OPENAI_API_KEY",
+        "INSTAGRAM_APP_ID",
+        "INSTAGRAM_APP_SECRET",
+        "INSTAGRAM_ACCESS_TOKEN",
+        "INSTAGRAM_USER_ID",
+        "INSTAGRAM_IG_USER_ID",
+        "BASE_URL",
+        "UPLOAD_API_URL",
+        "UPLOAD_API_KEY",
+        "UPLOAD_BASE_URL",
+        "R2_PUBLIC_BASE_URL",
+    ]
+    upserts: dict[str, str] = {}
+    if is_admin and isinstance(env_payload, dict):
+        for k in allowed_env:
+            if k in env_payload and env_payload.get(k) is not None:
+                upserts[k] = str(env_payload.get(k) or "").strip()
+        # Prefer canonical key and mirror to legacy alias.
+        if "INSTAGRAM_USER_ID" in env_payload and env_payload.get("INSTAGRAM_USER_ID") is not None:
+            uid = str(env_payload.get("INSTAGRAM_USER_ID") or "").strip()
+            upserts["INSTAGRAM_USER_ID"] = uid
+            upserts["INSTAGRAM_IG_USER_ID"] = uid
+        elif "INSTAGRAM_IG_USER_ID" in env_payload and env_payload.get("INSTAGRAM_IG_USER_ID") is not None:
+            uid = str(env_payload.get("INSTAGRAM_IG_USER_ID") or "").strip()
+            upserts["INSTAGRAM_USER_ID"] = uid
+            upserts["INSTAGRAM_IG_USER_ID"] = uid
+    if upserts:
+        _upsert_env_values(ENV_PATH, upserts)
+        # runtime env'i de güncelle (servis restart beklemeden bazı yerlerde etkili olsun)
+        for k, v in upserts.items():
+            os.environ[k] = v
+
+    # Account update/create
+    if isinstance(account_payload, dict):
+        force_create = bool(account_payload.get("force_create"))
+        aid = account_payload.get("id") or account_id
+        account = None
+        if aid and not force_create:
+            account = db.query(Account).filter(Account.id == aid).first()
+        if not account and not force_create:
+            account = db.query(Account).order_by(Account.id.asc()).first()
+        if account and not force_create:
+            if "ig_user_id" in account_payload:
+                account.ig_user_id = str(account_payload.get("ig_user_id") or "").strip()
+            if "access_token" in account_payload:
+                new_tok = str(account_payload.get("access_token") or "").strip()
+                # UI maskelenmiş değer gönderirse (sadece yıldız + son karakter) atla.
+                if new_tok and not set(new_tok).issubset({"*"}) and "***" not in new_tok:
+                    account.access_token = encrypt_secret(new_tok) or ""
+            if "niche" in account_payload:
+                account.niche = str(account_payload.get("niche") or "").strip() or "genel"
+            db.add(account)
+        elif any(account_payload.get(k) for k in ("ig_user_id", "access_token")):
+            new_tok = str(account_payload.get("access_token") or "").strip()
+            new_account = Account(
+                ig_user_id=str(account_payload.get("ig_user_id") or "").strip(),
+                access_token=encrypt_secret(new_tok) or "",
+                niche=str(account_payload.get("niche") or "genel").strip() or "genel",
+            )
+            db.add(new_account)
+            db.flush()
+            account = new_account
+        db.commit()
+        if account:
+            refreshed = get_system_settings(account_id=cast(int | None, account.id), db=db)
+            tok_plain = _account_token(account)
+            return {
+                "is_admin": refreshed.get("is_admin", False),
+                "env": refreshed.get("env", {}),
+                "account": {
+                    "id": cast(int | None, account.id),
+                    "ig_user_id": str(account.ig_user_id) if account.ig_user_id else "",
+                    "access_token": mask_secret(tok_plain, visible=6) if tok_plain else "",
+                    "access_token_set": bool(tok_plain),
+                    "niche": str(account.niche) if account.niche else "",
+                },
+            }
+
+    return get_system_settings(account_id=account_id, db=db)
+
+
+@router.post("/settings/exchange-token")
+def exchange_short_token(payload: dict = Body(...), db: Session = Depends(get_db)):
+    """
+    Exchange short-lived Facebook token to long-lived token and save to selected DB account.
+    """
+    account_id = payload.get("account_id")
+    short_token = str(payload.get("short_token") or "").strip()
+    if not account_id:
+        raise HTTPException(status_code=400, detail="account_id gerekli")
+    if not short_token:
+        raise HTTPException(status_code=400, detail="short_token gerekli")
+
+    account = db.query(Account).filter(Account.id == int(account_id)).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Hesap bulunamadı")
+
+    env_values = _read_env_map(ENV_PATH)
+    app_id = env_values.get("INSTAGRAM_APP_ID") or os.getenv("INSTAGRAM_APP_ID", "")
+    app_secret = env_values.get("INSTAGRAM_APP_SECRET") or os.getenv("INSTAGRAM_APP_SECRET", "")
+    if not app_id or not app_secret:
+        raise HTTPException(status_code=400, detail="INSTAGRAM_APP_ID veya INSTAGRAM_APP_SECRET eksik")
+
+    try:
+        resp = requests.get(
+            "https://graph.facebook.com/v19.0/oauth/access_token",
+            params={
+                "grant_type": "fb_exchange_token",
+                "client_id": app_id,
+                "client_secret": app_secret,
+                "fb_exchange_token": short_token,
+            },
+            timeout=30,
+        )
+        data = {}
+        try:
+            data = resp.json()
+        except Exception:
+            data = {"raw": (resp.text or "")[:300]}
+        if resp.status_code != 200 or "error" in data:
+            raise HTTPException(status_code=400, detail={"message": "Token exchange başarısız", "response": data})
+        long_token = str(data.get("access_token") or "").strip()
+        if not long_token:
+            raise HTTPException(status_code=400, detail={"message": "Long token alınamadı", "response": data})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Token exchange hatası: {e}")
+
+    # Save to selected account (DB) — şifreli olarak sakla.
+    account.access_token = encrypt_secret(long_token) or ""
+    db.add(account)
+    db.commit()
+
+    # If admin account, keep .env token in sync as default/global.
+    if str(account.niche or "").strip().lower() == "ai-tools":
+        _upsert_env_values(ENV_PATH, {"INSTAGRAM_ACCESS_TOKEN": long_token})
+        os.environ["INSTAGRAM_ACCESS_TOKEN"] = long_token
+
+    masked = long_token if len(long_token) < 16 else (long_token[:8] + "..." + long_token[-8:])
+    return {
+        "success": True,
+        "account_id": cast(int, account.id),
+        "expires_in": data.get("expires_in"),
+        "long_token_masked": masked,
+        "updated_db": True,
+        "updated_env": bool(str(account.niche or "").strip().lower() == "ai-tools"),
+    }
+
+
 @router.get("/generate-post")
-def generate_post():
+def generate_post(db: Session = Depends(get_db)):
     """
     Basit Post Üretme Testi - Sadece AI çıktısını test eder.
 
@@ -301,20 +589,46 @@ def generate_post():
     """
     # 1) Konu seç
     topic, content_type = get_next_topic_and_type()
+    _cap_add, _vis_en, _hf = prepare_engagement_for_topic(topic, content_type)
 
-    # 2) OpenAI ile caption üret (türe göre)
+    preview_account_id = None
     try:
-        raw_caption = generate_caption(topic, content_type=content_type)
+        _acc = db.query(Account).first()
+        preview_account_id = cast(int, _acc.id) if _acc else None
+    except Exception:
+        preview_account_id = None
+
+    # 2) OpenAI ile caption üret (türe göre); önceki metinlerle benzerlikten kaçın
+    try:
+        raw_caption = generate_caption_deduped(
+            topic,
+            content_type=content_type,
+            engagement_addon=_cap_add,
+            db=db,
+            account_id=preview_account_id,
+        )
     except Exception as e:
         raw_caption = f"Test post about {topic}. #AI #Automation"
         print(f"Warning: Caption generation failed: {e}")
+    try:
+        record_caption_history(
+            db,
+            raw_caption,
+            topic=topic,
+            account_id=preview_account_id,
+            source="generate-post",
+        )
+    except Exception as e:
+        print(f"Warning: caption history not saved: {e}")
 
     # 3) Affiliate link ekle (opsiyonel)
     caption_with_affiliate = attach_affiliate(raw_caption)
 
     # 4) Hashtag üret
     try:
-        hashtags = generate_hashtags(topic, caption=raw_caption, count=10)
+        hashtags = generate_hashtags(
+            topic, caption=raw_caption, count=10, engagement_focus=_hf
+        )
     except Exception as e:
         hashtags = ["#AI", "#Technology", "#Innovation", "#Motivation", "#Success"]
         print(f"Warning: Hashtag generation failed: {e}")
@@ -381,7 +695,7 @@ def publish_now(
             )
         # SQLAlchemy model attribute'ları runtime'da string döner
         ig_user_id = account.ig_user_id  # type: ignore[assignment]
-        access_token = account.access_token  # type: ignore[assignment]
+        access_token = _account_token(account)
     elif body.ig_user_id:
         # Direkt ig_user_id kullanılıyor
         ig_user_id = body.ig_user_id
@@ -483,11 +797,19 @@ def run_pipeline(
             exclude_recent_topics=recent_topics,
         )
 
+    _cap_add, _vis_en, _hf = prepare_engagement_for_topic(topic, content_type)
+
     # 3) Caption uret (OpenAI + affiliate), türe göre
     caption = None
     error_message: str | None = None
     try:
-        caption = generate_caption(topic, content_type=content_type)
+        caption = generate_caption_deduped(
+            topic,
+            content_type=content_type,
+            engagement_addon=_cap_add,
+            db=db,
+            account_id=cast(int, account.id),
+        )
         caption = attach_affiliate(caption)
     except Exception as exc:  # noqa: BLE001
         error_message = f"caption_error: {exc}"
@@ -499,14 +821,16 @@ def run_pipeline(
     # 5) Hashtag üret (opsiyonel, eğer yoksa)
     hashtags_list = []
     try:
-        hashtags_list = generate_hashtags(topic, caption=caption, count=10)
+        hashtags_list = generate_hashtags(
+            topic, caption=caption, count=10, engagement_focus=_hf
+        )
     except Exception:
         hashtags_list = ["#AI", "#Technology", "#Innovation"]
 
     # 6) Image prompt üret (opsiyonel)
     image_prompt = None
     try:
-        image_prompt = generate_image_prompt(topic)
+        image_prompt = generate_image_prompt(topic, engagement_visual_addon=_vis_en)
     except Exception:
         image_prompt = f"Square 1:1 Instagram post image, high quality, {topic}"
 
@@ -575,23 +899,41 @@ def generate_content(
             exclude_recent_topics=recent_topics,
         )
 
+    _cap_add, _vis_en, _hf = prepare_engagement_for_topic(topic, content_type)
+
+    # Hesap (caption benzerlik kontrolü aynı hesabın geçmişine göre yapılır)
+    account = (
+        db.query(Account).filter(Account.id == body.account_id).first()
+        if body.account_id
+        else db.query(Account).first()
+    )
+    account_id: int | None = cast(int, account.id) if account else None
+
     # 2) Caption üret (türüne göre: ilginç_bilgi, bilim, teknoloji, yapay_zeka, tasarim, uzay)
     try:
-        caption = generate_caption(topic, content_type=content_type)
+        caption = generate_caption_deduped(
+            topic,
+            content_type=content_type,
+            engagement_addon=_cap_add,
+            db=db,
+            account_id=account_id,
+        )
     except Exception as e:
         caption = f"Test post about {topic}. #AI #Automation"
         print(f"Warning: Caption generation failed: {e}")
 
     # 3) Hashtag üret
     try:
-        hashtags = generate_hashtags(topic, caption=caption, count=10)
+        hashtags = generate_hashtags(
+            topic, caption=caption, count=10, engagement_focus=_hf
+        )
     except Exception as e:
         hashtags = ["#AI", "#Technology", "#Innovation", "#Motivation", "#Success"]
         print(f"Warning: Hashtag generation failed: {e}")
 
     # 4) Image prompt üret
     try:
-        image_prompt = generate_image_prompt(topic)
+        image_prompt = generate_image_prompt(topic, engagement_visual_addon=_vis_en)
     except Exception as e:
         image_prompt = (
             f"Square 1:1 Instagram post image, high quality, modern style, {topic}"
@@ -660,11 +1002,7 @@ def generate_content(
     elif body.post_type == "reels":
         post_type = PostType.REELS
 
-    # 8) Account (ilk hesap kullanılır)
-    account = db.query(Account).first()
-    account_id = account.id if account else None
-
-    # 9) DB'ye DRAFT olarak kaydet (kullanıcı onaylamadan paylaşım yapılmaz)
+    # 8) DB'ye DRAFT olarak kaydet (kullanıcı onaylamadan paylaşım yapılmaz)
     post = Post(
         account_id=account_id,
         topic=topic,
@@ -796,7 +1134,7 @@ def publish_post_by_id(
                 status_code=404, detail=f"Account with id {body.account_id} not found"
             )
         ig_user_id = account.ig_user_id  # type: ignore[assignment]
-        access_token = account.access_token  # type: ignore[assignment]
+        access_token = _account_token(account)
     elif body.ig_user_id:
         ig_user_id = body.ig_user_id
         access_token = body.access_token
@@ -814,7 +1152,7 @@ def publish_post_by_id(
                 detail="No accounts configured. Create one with POST /api/accounts or provide account_id / ig_user_id.",
             )
         ig_user_id = account.ig_user_id  # type: ignore[assignment]
-        access_token = account.access_token  # type: ignore[assignment]
+        access_token = _account_token(account)
         body.account_id = account.id  # type: ignore[assignment]
 
     # .env'deki token guncel olabilir (DB'deki Account eski token tutuyor olabilir)
@@ -1089,6 +1427,7 @@ def publish_post_by_id(
 @router.get("/posts", response_model=list[PostDetailResponse])
 def list_posts(
     status: str | None = None,
+    account_id: int | None = None,
     db: Session = Depends(get_db),
 ):
     """
@@ -1108,6 +1447,8 @@ def list_posts(
             query = query.filter(Post.status == status_enum)
         except ValueError:
             raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
+    if account_id:
+        query = query.filter(Post.account_id == account_id)
 
     posts = query.order_by(Post.created_at.desc()).all()
 
@@ -1350,7 +1691,7 @@ def test_reel(payload: dict = Body(...), db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="No account configured")
 
     ig_user_id = str(payload.get("ig_user_id") or account.ig_user_id or "").strip()
-    access_token = str(payload.get("access_token") or account.access_token or "").strip()
+    access_token = str(payload.get("access_token") or _account_token(account) or "").strip()
     if not ig_user_id or not access_token:
         raise HTTPException(status_code=400, detail="ig_user_id or access_token missing")
 

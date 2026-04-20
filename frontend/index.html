@@ -10,18 +10,26 @@
   <link href="styles.css" rel="stylesheet" />
   <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml" />
 </head>
-<body>
+<body class="app-layout">
   <header class="header">
     <div class="header-inner">
       <div class="header-brand">
         <h1 class="logo">AutoSocial AI</h1>
         <p class="tagline">AI destekli sosyal medya içerik üretimi</p>
       </div>
-      <a href="/insights" class="btn btn-nav">Instagram İstatistikleri</a>
+      <div class="header-actions">
+        <div class="account-switcher">
+          <button type="button" id="btn-account-switch" class="btn btn-nav">Hesap</button>
+          <div id="account-dropdown" class="account-dropdown" hidden></div>
+        </div>
+        <a href="/settings" class="btn btn-nav">Ayarlar</a>
+        <a href="/insights" class="btn btn-nav">Instagram İstatistikleri</a>
+        <button type="button" id="btn-logout" class="btn btn-nav" title="Çıkış">Çıkış</button>
+      </div>
     </div>
   </header>
 
-  <main class="main">
+  <main class="main main-dashboard">
     <section class="section section-generate">
       <h2 class="section-title">Yeni içerik üret</h2>
       <p class="section-desc">Konu girin; metin ve görsel taslak olarak oluşturulur, onayladıktan sonra yayınlayabilirsiniz.</p>
@@ -44,35 +52,35 @@
       <h2 class="section-title">Otomatik Üretim Ayarları</h2>
       <p class="section-desc">Otomatik taslak üretimini buradan açıp kapatabilir, frekans ve zaman aralıklarını belirleyebilirsiniz.</p>
       <form id="form-automation" class="form-automation">
-        <div class="input-grid">
-          <label>
+        <div class="input-grid automation-top-controls">
+          <label class="automation-control-cell">
             <input type="checkbox" id="automation-enabled" /> Etkin
           </label>
-          <label>
-            Frekans
+          <label class="automation-control-cell automation-freq-inline">
+            <span class="automation-freq-text">Frekans</span>
             <select id="automation-frequency">
               <option value="daily">Günlük</option>
               <option value="weekly">Haftalık</option>
             </select>
           </label>
-          <label class="checkbox-inline">
+          <label class="automation-control-cell">
             <input type="checkbox" id="automation-only-draft" /> Sadece taslak üret
           </label>
         </div>
         <div class="automation-dynamic">
           <!-- Daily times UI -->
-          <div id="automation-daily-panel" style="display:none; margin-top:0.75rem;">
-            <label style="font-weight:600; margin-bottom:0.5rem;">Günlük Saatler</label>
-            <div style="display:flex; gap:0.5rem; align-items:center;">
+          <div id="automation-daily-panel" class="automation-panel-block" style="display:none;">
+            <span class="automation-subheading">Günlük Saatler</span>
+            <div class="automation-add-row">
               <input type="time" id="automation-daily-time" />
               <button type="button" id="btn-add-daily-time" class="btn btn-secondary">Saat Ekle</button>
             </div>
-            <div id="automation-daily-list" style="margin-top:0.5rem;"></div>
+            <div id="automation-daily-list" class="automation-time-list"></div>
           </div>
           <!-- Weekly times UI -->
-          <div id="automation-weekly-panel" style="display:none; margin-top:0.75rem;">
-            <label style="font-weight:600; margin-bottom:0.5rem;">Haftalık Gün ve Saatler</label>
-            <div style="display:flex; gap:0.5rem; align-items:center;">
+          <div id="automation-weekly-panel" class="automation-panel-block" style="display:none;">
+            <span class="automation-subheading">Haftalık Gün ve Saatler</span>
+            <div class="automation-add-row">
               <select id="automation-weekday">
                 <option value="Mon">Pzt</option>
                 <option value="Tue">Sal</option>
@@ -85,21 +93,21 @@
               <input type="time" id="automation-weekly-time" />
               <button type="button" id="btn-add-weekly-time" class="btn btn-secondary">Ekle</button>
             </div>
-            <div id="automation-weekly-list" style="margin-top:0.5rem;"></div>
+            <div id="automation-weekly-list" class="automation-time-list"></div>
           </div>
         </div>
-        <div style="margin-top:0.75rem;">
+        <div class="automation-save-row">
           <button type="button" id="btn-automation-save" class="btn btn-primary">Kaydet</button>
           <span id="automation-message" class="message" hidden></span>
         </div>
       </form>
-      <div style="margin-top:1.25rem; font-size:0.9rem; color:var(--text-muted);">
-        <div style="font-weight:600; margin-bottom:0.25rem;">Sistemdeki içerik konuları</div>
-        <p style="margin:0 0 0.25rem 0;">
+      <div class="automation-topics">
+        <div class="automation-subheading" style="margin-bottom:0.25rem;">Sistemdeki içerik konuları</div>
+        <p>
           Otomatik üretim, aşağıdaki içerik türleri ve konularından seçim yaparak post üretir. Instagram istatistikleri ve
           performans analizine göre bu konuların ağırlıkları zamanla otomatik olarak güncellenir.
         </p>
-        <ul style="margin:0; padding-left:1.25rem;">
+        <ul>
           <li><strong>İlginç Bilgiler</strong>: günlük hayattan şaşırtan bilgiler</li>
           <li><strong>Bilim</strong>: fizik, psikoloji, nörobilim, biyoloji vb.</li>
           <li><strong>Teknoloji</strong>: yazılım, donanım, internet, oyun dünyası</li>
@@ -107,7 +115,8 @@
           <li><strong>Tasarım</strong>: UI/UX, tipografi, renk kullanımı</li>
           <li><strong>Uzay</strong>: gezegenler, yıldızlar, kara delikler, evren</li>
         </ul>
-        <p id="topic-changes" style="margin-top:0.5rem; font-size:0.85rem; color:#c62828;"></p>
+        <p id="topic-changes" style="margin-top:0.35rem; font-size:0.8rem; color:#c62828;"></p>
+        <p id="engagement-research-note" style="margin-top:0.25rem; font-size:0.8rem; color:#c62828;"></p>
       </div>
     </section>
 
@@ -140,6 +149,15 @@
     </div>
   </aside>
 
+  <script src="/auth.js"></script>
+  <script>
+    if (!window.AuthAPI || !window.AuthAPI.requireAuth()) {
+      // redirect ongoing
+    } else {
+      const lo = document.getElementById("btn-logout");
+      if (lo) lo.addEventListener("click", function () { window.AuthAPI.logout(); });
+    }
+  </script>
   <script src="app.js"></script>
 </body>
 </html>

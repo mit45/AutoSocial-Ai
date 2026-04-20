@@ -12,17 +12,20 @@ CONTENT_TYPES = [
 
 # Tür bazlı konu havuzları – aynı konu peş peşe gelmesin diye tür ve konu çeşitliliği
 TOPICS_ILGINC = [
-    "insan beyninin hiç bilmediğin bir özelliği",
-    "günlük hayatta kullandığın ama tarihini bilmediğin bir nesne",
+    "çoğu insanın yanlış bildiği ama günlük hayatta sık görülen bir gerçek",
+    "fazla mantıklı görünüp aslında tam tersi olan günlük bir inanç",
+    "telefonda / ekranda fark etmeden yaptığın davranışın psikolojik karşılığı",
     "dünyadaki en ilginç hayvan savunma mekanizmaları",
     "renk algısının kültüre göre değişmesi",
     "uykuda beynin yaptığı gizli temizlik",
     "zaman algısının stres altında neden bozulduğu",
     "alışkanlıkların beyindeki izi",
     "bir gününü kurtaracak küçük ama şaşırtıcı bir bilgi",
+    "akışta 'dur bi dakika' dedirtecek az bilinen bir gerçek",
 ]
 
 TOPICS_BILIM = [
+    "herkesin 'bildiğini sandığı' ama bilimde tartışmalı veya yanlış anlaşılan bir şey",
     "kuantum fiziğinin günlük hayata etkileri",
     "evrende rastgelelik mi düzen mi baskın",
     "plasebo etkisinin bilimi",
@@ -31,9 +34,11 @@ TOPICS_BILIM = [
     "kaos teorisi ve hava durumu",
     "iklim biliminin temel gerçekleri",
     "bilimsel düşünme ve yalın deneyler",
+    "stres anında vücudunun yaptığı 'sessiz alarm' ve algı",
 ]
 
 TOPICS_TEKNOLOJI = [
+    "uygulamaların seni ekranda tutmak için kullandığı 'küçük hileler' (etik çerçevede)",
     "akıllı telefonların gizli sensörleri",
     "şarj döngüleri ve pil sağlığı",
     "bulut teknolojisinin perde arkası",
@@ -42,9 +47,11 @@ TOPICS_TEKNOLOJI = [
     "nesnelerin interneti ile akıllı evler",
     "giyilebilir teknolojilerin geleceği",
     "internet altyapısının basitleştirilmiş haritası",
+    "VPN / izleme / çerez konusunda herkesin karıştırdığı nokta",
 ]
 
 TOPICS_AI = [
+    "ChatGPT / benzeri araçlarda herkesin yaptığı 1 yaygın hata ve doğrusu",
     "yapay zekanın nasıl öğrendiğini basitçe anlatmak",
     "günlük hayatta fark etmeden kullandığımız yapay zeka örnekleri",
     "yapay zeka önyargıları ve veri setleri",
@@ -53,9 +60,11 @@ TOPICS_AI = [
     "yapay zekayla üretkenliği artırma yolları",
     "metin üretim modellerinin sınırları",
     "yapay zekayı doğru sorularla yönlendirmek",
+    "AI ile içerik üretirken 'insan gibi duran ama riskli' tuzak",
 ]
 
 TOPICS_TASARIM = [
+    "profil veya feed'inde 'ucuz görünen' 3 küçük tasarım hatası",
     "göz yormayan arayüz tasarımı püf noktaları",
     "renk teorisi ve markalaşma",
     "tipografinin hissettirdikleri",
@@ -67,6 +76,7 @@ TOPICS_TASARIM = [
 ]
 
 TOPICS_UZAY = [
+    "kara delikleri günlük dilde anlatırken yapılan en büyük kafa karışıklığı",
     "kara deliklerin gerçekten ne yaptığı",
     "ışık yılının günlük hayatta anlaşılır karşılığı",
     "Mars'a gitmenin mühendislik zorlukları",
@@ -75,6 +85,7 @@ TOPICS_UZAY = [
     "gezegenlerin oluşum süreci",
     "evrenin sonu hakkında senaryolar",
     "gözle görülebilen takımyıldızların hikayeleri",
+    "Mars gökyüzü / Dünya'dan bakış: ölçek şoku hissi veren bir karşılaştırma",
 ]
 
 # Genel havuz: yukarıdaki tüm konuların birleşimi

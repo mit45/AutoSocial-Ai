@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.content_ai import KOMIK_USLUP, generate_hashtags, get_client
+from app.services.content_ai import (
+    _format_avoid_similar_block,
+    extra_viral_caption_instructions,
+    generate_hashtags,
+    get_client,
+)
 
 
 def _log(tag: str, msg: str) -> None:
@@ -72,6 +77,8 @@ def generate_instagram_content(
     content_type: str,
     prefer_short: bool | None = None,
     hashtag_count: int = 10,
+    engagement_pack: dict[str, Any] | None = None,
+    avoid_similar_to: list[str] | None = None,
 ) -> dict[str, Any]:
     """
     Input:
@@ -93,34 +100,74 @@ def generate_instagram_content(
     structure = str(style["structure"])
 
     client = get_client()
+    extra = ""
+    if engagement_pack and isinstance(engagement_pack, dict):
+        rs = str(engagement_pack.get("research_summary_tr") or "").strip()
+        hk = str(engagement_pack.get("scroll_hook_tr") or "").strip()
+        bd = str(engagement_pack.get("body_angle_tr") or "").strip()
+        cta = str(engagement_pack.get("soft_cta_tr") or "").strip()
+        av = engagement_pack.get("avoid_tr")
+        avs = ", ".join(str(x) for x in (av or [])[:6]) if isinstance(av, list) else ""
+        if rs or hk:
+            extra = (
+                "\nStrateji / araştırma notları (yazıya yansıt):\n"
+                f"- Özet: {rs}\n"
+                f"- Güçlü açılış fikri: {hk}\n"
+                f"- Gövde odağı: {bd}\n"
+                f"- Yumuşak CTA: {cta}\n"
+            )
+            if avs:
+                extra += f"- Kaçın: {avs}\n"
+
     prompt = (
         "Türkçe olarak Instagram için bir caption yaz.\n\n"
         f"Konu: {topic_choice}\n"
         f"Format: {t}\n"
         f"Yapı: {structure}\n\n"
-        "Engagement optimizasyonu:\n"
-        "- İlk satır güçlü bir HOOK olsun (merak/sürpriz/soru).\n"
-        "- Son satır net bir CTA olsun (yorum sorusu, kaydet, paylaş).\n"
-        "- Satırlar kısa, okunabilir olsun.\n"
-        "- Emoji: 1-3 adet, abartma.\n"
+        "Okunabilirlik:\n"
+        "- İlk satır dikkat çeksin ama clickbait veya alaycı ton kullanma.\n"
+        "- Ses ve giriş stratejisi aşağıda verilenlere uy; her üretimde farklı his versin.\n"
+        "- Son satırda net bir CTA (soru, kaydet, paylaş) — zorlamadan.\n"
+        "- Satırlar kısa ve ritimli; madde işareti listesi kullanma.\n"
+        "- Emoji en fazla 2.\n"
         "- Hashtag yazma.\n"
         f"- Maksimum {max_chars} karakteri hedefle.\n"
-        + KOMIK_USLUP
+        + extra_viral_caption_instructions()
+        + extra
         + "\n"
         "Sadece caption metnini döndür."
     )
 
+    if avoid_similar_to:
+        cleaned = [x for x in avoid_similar_to if (x or "").strip()]
+        if cleaned:
+            prompt = prompt + _format_avoid_similar_block(cleaned)
+
     resp = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.9,
-        frequency_penalty=0.5,
-        presence_penalty=0.4,
+        temperature=0.88,
+        frequency_penalty=0.75,
+        presence_penalty=0.5,
     )
     caption = (resp.choices[0].message.content or "").strip()
 
     image_prompt = generate_visual_prompt(topic_choice, t)
-    hashtags = generate_hashtags(topic_choice, caption=caption, count=int(hashtag_count))
+    if engagement_pack and str(engagement_pack.get("visual_direction_en") or "").strip():
+        image_prompt = (
+            image_prompt
+            + " "
+            + str(engagement_pack["visual_direction_en"]).strip()
+        )
+    hf = None
+    if engagement_pack:
+        hf = str(engagement_pack.get("hashtag_focus_tr") or "").strip() or None
+    hashtags = generate_hashtags(
+        topic_choice,
+        caption=caption,
+        count=int(hashtag_count),
+        engagement_focus=hf,
+    )
 
     _log("content_gen", f"type={t} topic='{topic_choice}' caption_len={len(caption)} hashtags={len(hashtags)}")
     return {"caption": caption, "image_prompt": image_prompt, "hashtags": hashtags}

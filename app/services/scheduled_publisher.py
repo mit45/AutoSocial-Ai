@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from app.database import SessionLocal
 from app.models import Post, Account, PostStatus
+from app.security import decrypt_secret
 from app.services.instagram import publish_image, publish_story
 from app.models import PostType
 import json
@@ -74,7 +75,8 @@ def run_scheduled_publish():
                     continue
 
                 ig_user_id = account.ig_user_id
-                access_token = account.access_token
+                _tok_raw = str(account.access_token) if account.access_token is not None else ""
+                access_token = decrypt_secret(_tok_raw) or _tok_raw
                 env_token = os.getenv("INSTAGRAM_ACCESS_TOKEN", None)
                 if env_token:
                     access_token = env_token

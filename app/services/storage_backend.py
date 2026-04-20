@@ -126,8 +126,13 @@ def delete_key(key: str) -> bool:
 
 
 def upload_to_remote_server(png_bytes: bytes, filename: str, prefix: str = "ig/post") -> str:
-    # Try R2 first
-    if R2_ACCOUNT_ID and R2_BUCKET_NAME:
+    # R2 S3 endpoint (*.r2.cloudflarestorage.com) is not publicly readable; Instagram Graph API
+    # must fetch image_url without auth. Only use R2 when R2_PUBLIC_BASE_URL (or r2.dev / custom domain) is set.
+    r2_credentials_ok = bool(
+        R2_ACCOUNT_ID and R2_BUCKET_NAME and R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY
+    )
+    r2_public_ok = bool(R2_PUBLIC_BASE_URL and R2_PUBLIC_BASE_URL.strip())
+    if r2_credentials_ok and r2_public_ok:
         try:
             return upload_bytes(png_bytes, filename, prefix=prefix)
         except Exception:

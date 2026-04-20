@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.database import SessionLocal
 from app.services.feedback_loop_engine import load_learning_state
-from app.services.instagram_content_generator import generate_instagram_content
+from app.services.content_uniqueness import generate_instagram_content_deduped
+from app.services.content_engagement_boost import build_engagement_pack, is_engagement_boost_enabled
 
 
 def generate_content_from_strategy_item(
@@ -21,6 +23,13 @@ def generate_content_from_strategy_item(
     """
     learning_state = load_learning_state(db_path, key=learning_key)
 
+    engagement_pack = None
+    if is_engagement_boost_enabled():
+        try:
+            engagement_pack = build_engagement_pack(topic, content_type, learning_state)
+        except Exception:
+            engagement_pack = None
+
     cap_w = (learning_state.get("caption_style") or {}) if isinstance(learning_state, dict) else {}
     short_w = float(cap_w.get("short", 0.0) or 0.0)
     long_w = float(cap_w.get("long", 0.0) or 0.0)
@@ -33,10 +42,17 @@ def generate_content_from_strategy_item(
     else:
         prefer_short = None
 
-    return generate_instagram_content(
-        topic=topic,
-        content_type=content_type,
-        prefer_short=prefer_short,
-        hashtag_count=hashtag_count,
-    )
+    db = SessionLocal()
+    try:
+        return generate_instagram_content_deduped(
+            db=db,
+            account_id=None,
+            topic=topic,
+            content_type=content_type,
+            prefer_short=prefer_short,
+            hashtag_count=hashtag_count,
+            engagement_pack=engagement_pack,
+        )
+    finally:
+        db.close()
 

@@ -37,7 +37,10 @@
         <h1 class="logo">AutoSocial AI</h1>
         <p class="tagline">Instagram istatistikleri</p>
       </div>
-      <a href="/" class="btn btn-nav">Panele dön</a>
+      <div>
+        <a href="/" class="btn btn-nav">Panele dön</a>
+        <button type="button" id="btn-logout" class="btn btn-nav" title="Çıkış">Çıkış</button>
+      </div>
     </div>
   </header>
 
@@ -54,6 +57,13 @@
     </section>
   </main>
 
+  <script src="/auth.js"></script>
+  <script>
+    if (window.AuthAPI && window.AuthAPI.requireAuth()) {
+      const lo = document.getElementById("btn-logout");
+      if (lo) lo.addEventListener("click", function () { window.AuthAPI.logout(); });
+    }
+  </script>
   <script>
     (function () {
       const loadingEl = document.getElementById('insights-loading');

@@ -52,3 +52,32 @@ R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID", "")
 R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY", "")
 R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME", "")
 R2_PUBLIC_BASE_URL = os.getenv("R2_PUBLIC_BASE_URL", "")  # e.g. https://cdn.umittopuz.com/ig
+
+
+# ---------------------------------------------------------------------------
+# Authentication & Encryption
+# ---------------------------------------------------------------------------
+# SECRET_KEY: JWT imzalama anahtarı.
+# ENCRYPTION_KEY: Fernet için hassas alanların simetrik şifrelenmesi.
+# Her ikisi de .env içinde atanmalı; yoksa süreç başında rastgele üretilir
+# (bu durumda sunucu yeniden başlatıldığında eski şifreli veriler çözülemez!).
+SECRET_KEY = _getenv("SECRET_KEY", "")
+ENCRYPTION_KEY = _getenv("ENCRYPTION_KEY", "")
+JWT_ALGORITHM = _getenv("JWT_ALGORITHM", "HS256")
+try:
+    ACCESS_TOKEN_EXPIRE_MINUTES = int(_getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+except Exception:
+    ACCESS_TOKEN_EXPIRE_MINUTES = 60
+try:
+    REFRESH_TOKEN_EXPIRE_DAYS = int(_getenv("REFRESH_TOKEN_EXPIRE_DAYS", "14"))
+except Exception:
+    REFRESH_TOKEN_EXPIRE_DAYS = 14
+
+# Geliştirme kolaylığı: AUTH_REQUIRED=0 ise auth dependency'leri pas geçilir
+# (yalnızca lokal debug için). Varsayılan 1 (zorunlu).
+AUTH_REQUIRED = _getenv("AUTH_REQUIRED", "1").strip() not in ("0", "false", "False", "")
+
+# İlk kurulum için (yalnızca DB boşsa) otomatik oluşturulacak admin kullanıcı.
+# Atanmamışsa ilk açılışta kullanıcı UI'dan kayıt olmalı.
+BOOTSTRAP_ADMIN_EMAIL = _getenv("BOOTSTRAP_ADMIN_EMAIL", "")
+BOOTSTRAP_ADMIN_PASSWORD = _getenv("BOOTSTRAP_ADMIN_PASSWORD", "")

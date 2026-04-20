@@ -269,9 +269,10 @@ def _ffprobe_video_metadata(mp4_path: Path) -> dict[str, Any]:
 
     duration_s = None
     fmt = info.get("format") or {}
-    if fmt.get("duration") is not None:
+    dur_raw = fmt.get("duration")
+    if dur_raw is not None:
         try:
-            duration_s = float(fmt.get("duration"))
+            duration_s = float(dur_raw)
         except Exception:
             duration_s = None
 
@@ -1090,8 +1091,10 @@ def generate_and_publish_reel(
     try:
         duration_for_audio = None
         meta_obj = vinfo.get("meta") if isinstance(vinfo, dict) else None
-        if isinstance(meta_obj, dict) and meta_obj.get("duration_s") is not None:
-            duration_for_audio = float(meta_obj.get("duration_s"))
+        if isinstance(meta_obj, dict):
+            d_audio = meta_obj.get("duration_s")
+            if d_audio is not None:
+                duration_for_audio = float(d_audio)
         mp4_bytes = _add_background_audio_to_reel_mp4_bytes(
             mp4_bytes,
             duration_s=duration_for_audio,

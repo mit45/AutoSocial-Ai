@@ -93,6 +93,91 @@
     });
   }
 
+  /** Öğrenme durumu meta.updated_at için GG.AA.YYYY (otomasyon kırmızı metin) */
+  function formatLearningUpdateDateOnly(iso) {
+    if (!iso) return "";
+    var s = String(iso).trim();
+    if (s && !/Z|[+-]\d{2}:?\d{2}$/.test(s)) s = s.replace(/\.\d+$/, "") + "Z";
+    var d = new Date(s);
+    if (isNaN(d.getTime())) return "";
+    return d.toLocaleDateString("tr-TR", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    });
+  }
+
+  /** Öğrenme + strateji/araştırma özetini (kırmızı metinler) doldurur */
+  function applyLearningStateToAutomationTopics(state) {
+    var topicChangesEl = document.getElementById("topic-changes");
+    var engagementResearchEl = document.getElementById("engagement-research-note");
+    if (!state || typeof state !== "object") {
+      if (topicChangesEl) topicChangesEl.textContent = "";
+      if (engagementResearchEl) engagementResearchEl.textContent = "";
+      return;
+    }
+    var meta = state.meta || {};
+    var topicWeights = state.topic_weights || {};
+    var keys = Object.keys(topicWeights || {});
+    if (!topicChangesEl) {
+      /* skip topic line */
+    } else if (!keys.length) {
+      topicChangesEl.textContent = "";
+    } else {
+      var sorted = keys
+        .map(function (k) {
+          return { key: k, w: Number(topicWeights[k] || 0) };
+        })
+        .sort(function (a, b) {
+          return a.w - b.w;
+        });
+      var worst = sorted.slice(0, 3).map(function (x) {
+        return x.key;
+      });
+      if (!worst.length) {
+        topicChangesEl.textContent = "";
+      } else {
+        var ts = meta.updated_at || "";
+        var when = ts ? "Son analizde" : "Analiz sonucunda";
+        var datePart = formatLearningUpdateDateOnly(ts);
+        var dateSuffix =
+          datePart !== "" ? " (Güncelleme Tarihi: " + datePart + ")" : "";
+        topicChangesEl.textContent =
+          when +
+          " düşük performans gösteren konular daha az kullanılacak: " +
+          worst.join(", ") +
+          "." +
+          dateSuffix;
+      }
+    }
+
+    if (engagementResearchEl) {
+      var eu = state.engagement_ui;
+      if (eu && typeof eu === "object") {
+        var line =
+          (eu.summary_line_tr && String(eu.summary_line_tr).trim()) || "";
+        var topicHint =
+          eu.topic && String(eu.topic).trim()
+            ? " Son üretim konusu: " + String(eu.topic).trim() + "."
+            : "";
+        var uAt = eu.updated_at || "";
+        var dEng = formatLearningUpdateDateOnly(uAt);
+        var dSuffix =
+          dEng !== "" ? " (Strateji güncellemesi: " + dEng + ")" : "";
+        var base =
+          line || eu.research_summary_tr
+            ? "Araştırma ve iyileştirmeler: " +
+              (line || String(eu.research_summary_tr || "")).trim() +
+              topicHint +
+              dSuffix
+            : "";
+        engagementResearchEl.textContent = base;
+      } else {
+        engagementResearchEl.textContent = "";
+      }
+    }
+  }
+
   function imageUrl(url) {
     if (!url) return "";
     if (url.startsWith("http")) return url;
@@ -105,6 +190,129 @@
     div.textContent = s;
     return div.innerHTML;
   }
+
+  let activeAccountId = null;
+
+  function accountScopedUrl(url) {
+    if (!activeAccountId) return url;
+    return url + (url.indexOf("?") >= 0 ? "&" : "?") + "account_id=" + encodeURIComponent(activeAccountId);
+  }
+
+  function withActiveAccount(payload) {
+    const p = { ...(payload || {}) };
+    if (activeAccountId) p.account_id = Number(activeAccountId);
+    return p;
+  }
+
+  const btnAccountSwitch = document.getElementById("btn-account-switch");
+  const accountDropdown = document.getElementById("account-dropdown");
+
+  function closeAccountDropdown() {
+    if (accountDropdown) accountDropdown.hidden = true;
+  }
+
+  function openAccountDropdown() {
+    if (accountDropdown) accountDropdown.hidden = false;
+  }
+
+  function accountButtonLabel(account) {
+    if (!account) return "Hesap";
+    const niche = account.niche ? String(account.niche) : "";
+    return niche ? "Hesap: " + niche : "Hesap #" + account.id;
+  }
+
+  function renderAccountDropdown(accounts) {
+    if (!accountDropdown) return;
+    accountDropdown.innerHTML = "";
+    if (!accounts || !accounts.length) {
+      const empty = document.createElement("button");
+      empty.type = "button";
+      empty.disabled = true;
+      empty.textContent = "Kayıtlı hesap yok";
+      accountDropdown.appendChild(empty);
+      return;
+    }
+    accounts.forEach(function (acc) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.textContent = (acc.niche || "Hesap") + " · " + (acc.ig_user_id || ("ID " + acc.id));
+      item.addEventListener("click", function () {
+        activeAccountId = String(acc.id);
+        localStorage.setItem("autosocial_active_account_id", activeAccountId);
+        if (btnAccountSwitch) btnAccountSwitch.textContent = accountButtonLabel(acc);
+        closeAccountDropdown();
+        loadPosts(currentStatusFilter);
+        loadAutomationSettings();
+      });
+      accountDropdown.appendChild(item);
+    });
+
+    const divider = document.createElement("div");
+    divider.className = "account-dropdown-divider";
+    accountDropdown.appendChild(divider);
+
+    const addBtn = document.createElement("button");
+    addBtn.type = "button";
+    addBtn.className = "account-add-btn";
+    addBtn.textContent = "+ Hesap Ekle";
+    addBtn.addEventListener("click", function () {
+      window.location.href = "/settings?new_account=1";
+    });
+    accountDropdown.appendChild(addBtn);
+  }
+
+  function loadAccountsForSwitcher() {
+    const saved = localStorage.getItem("autosocial_active_account_id");
+    if (saved) activeAccountId = saved;
+    getJson(API_BASE + "/accounts")
+      .then(function (accounts) {
+        const list = Array.isArray(accounts) ? accounts : [];
+        renderAccountDropdown(list);
+        let selected = null;
+        if (activeAccountId) {
+          selected = list.find(function (a) {
+            return String(a.id) === String(activeAccountId);
+          });
+        }
+        if (!selected && list.length) {
+          selected = list[0];
+          activeAccountId = String(selected.id);
+          localStorage.setItem("autosocial_active_account_id", activeAccountId);
+        }
+        if (btnAccountSwitch) btnAccountSwitch.textContent = accountButtonLabel(selected);
+        try {
+          loadPosts(currentStatusFilter || "");
+        } catch (_) {}
+        try {
+          loadAutomationSettings();
+        } catch (_) {}
+      })
+      .catch(function () {
+        if (btnAccountSwitch) btnAccountSwitch.textContent = "Hesap";
+        try {
+          loadPosts(currentStatusFilter || "");
+        } catch (_) {}
+        try {
+          loadAutomationSettings();
+        } catch (_) {}
+      });
+  }
+
+  if (btnAccountSwitch && accountDropdown) {
+    btnAccountSwitch.addEventListener("click", function () {
+      if (accountDropdown.hidden) openAccountDropdown();
+      else closeAccountDropdown();
+    });
+    document.addEventListener("click", function (e) {
+      const t = e.target;
+      if (!t) return;
+      if (!accountDropdown.contains(t) && !btnAccountSwitch.contains(t)) {
+        closeAccountDropdown();
+      }
+    });
+  }
+
+  loadAccountsForSwitcher();
 
   // ——— Generate form ———
   const formGenerate = document.getElementById("form-generate");
@@ -128,45 +336,10 @@
   }
 
   // ——— Topic/strategy changes under automation section ———
-  const topicChangesEl = document.getElementById("topic-changes");
-  if (topicChangesEl) {
-    getJson(API_BASE + "/analytics/learning-state")
-      .then(function (state) {
-        if (!state || typeof state !== "object") return;
-        const meta = state.meta || {};
-        const topicWeights = state.topic_weights || {};
-        const keys = Object.keys(topicWeights || {});
-        if (!keys.length) {
-          topicChangesEl.textContent = "";
-          return;
-        }
-        // En düşük ağırlıklı 3 konuyu bul
-        const sorted = keys
-          .map(function (k) {
-            return { key: k, w: Number(topicWeights[k] || 0) };
-          })
-          .sort(function (a, b) {
-            return a.w - b.w;
-          });
-        var worst = sorted.slice(0, 3).map(function (x) {
-          return x.key;
-        });
-        if (!worst.length) {
-          topicChangesEl.textContent = "";
-          return;
-        }
-        var ts = meta.updated_at || "";
-        var when = ts ? "Son analizde" : "Analiz sonucunda";
-        topicChangesEl.textContent =
-          when +
-          " düşük performans gösteren konular daha az kullanılacak: " +
-          worst.join(", ") +
-          ".";
-      })
-      .catch(function () {
-        // Sessizce yut; bu alan sadece bilgilendirme amaçlı.
-      });
-  }
+  getJson(API_BASE + "/analytics/learning-state")
+    .then(applyLearningStateToAutomationTopics)
+    .catch(function () {});
+
 
   if (formGenerate) {
     formGenerate.addEventListener("submit", function (e) {
@@ -176,7 +349,7 @@
       btnGenerate.classList.add("loading");
       btnGenerate.disabled = true;
 
-      postJson(API_BASE + "/generate", { topic: topic || null })
+      postJson(API_BASE + "/generate", withActiveAccount({ topic: topic || null }))
         .then(function (res) {
           showMessage(
             messageGenerate,
@@ -184,6 +357,9 @@
             "success"
           );
           loadPosts(currentStatusFilter);
+          getJson(API_BASE + "/analytics/learning-state")
+            .then(applyLearningStateToAutomationTopics)
+            .catch(function () {});
           // Reset topic textarea to initial empty state and resize
           if (typeof topicTextarea !== "undefined" && topicTextarea) {
             topicTextarea.value = "";
@@ -347,7 +523,8 @@
   }
 
   function loadPosts(status) {
-    const url = status ? API_BASE + "/posts?status=" + encodeURIComponent(status) : API_BASE + "/posts";
+    const baseUrl = status ? API_BASE + "/posts?status=" + encodeURIComponent(status) : API_BASE + "/posts";
+    const url = accountScopedUrl(baseUrl);
     getJson(url)
       .then(function (list) {
         currentStatusFilter = status || "";
@@ -432,10 +609,10 @@
         let publishPromise;
         if (status === "failed") {
           // Use republish so backend will set approved then publish
-          publishPromise = postJson(API_BASE + "/posts/" + id + "/republish", scheduledAt ? { post_type: "post", scheduled_at: scheduledAt } : { post_type: "post" });
+          publishPromise = postJson(API_BASE + "/posts/" + id + "/republish", withActiveAccount(scheduledAt ? { post_type: "post", scheduled_at: scheduledAt } : { post_type: "post" }));
         } else {
           // default publish
-          publishPromise = postJson(API_BASE + "/publish/" + id, scheduledAt ? { scheduled_at: scheduledAt } : { post_type: "post", ...(scheduledAt ? { scheduled_at: scheduledAt } : {}) });
+          publishPromise = postJson(API_BASE + "/publish/" + id, withActiveAccount(scheduledAt ? { scheduled_at: scheduledAt } : { post_type: "post", ...(scheduledAt ? { scheduled_at: scheduledAt } : {}) }));
         }
         publishPromise
           .then(function (res) {
@@ -490,9 +667,9 @@
         btn.disabled = true;
         let publishPromisePost;
         if (status === "failed" || status === "draft") {
-          publishPromisePost = postJson(API_BASE + "/posts/" + id + "/republish", scheduledAt ? { post_type: "post", scheduled_at: scheduledAt } : { post_type: "post" });
+          publishPromisePost = postJson(API_BASE + "/posts/" + id + "/republish", withActiveAccount(scheduledAt ? { post_type: "post", scheduled_at: scheduledAt } : { post_type: "post" }));
         } else {
-          publishPromisePost = postJson(API_BASE + "/publish/" + id, scheduledAt ? { post_type: "post", scheduled_at: scheduledAt } : { post_type: "post" });
+          publishPromisePost = postJson(API_BASE + "/publish/" + id, withActiveAccount(scheduledAt ? { post_type: "post", scheduled_at: scheduledAt } : { post_type: "post" }));
         }
         publishPromisePost
           .then(function (res) {
@@ -542,9 +719,9 @@
         btn.disabled = true;
         let publishPromiseStory;
         if (status === "failed" || status === "draft") {
-          publishPromiseStory = postJson(API_BASE + "/posts/" + id + "/republish", scheduledAtStory ? { post_type: "story", scheduled_at: scheduledAtStory } : { post_type: "story" });
+          publishPromiseStory = postJson(API_BASE + "/posts/" + id + "/republish", withActiveAccount(scheduledAtStory ? { post_type: "story", scheduled_at: scheduledAtStory } : { post_type: "story" }));
         } else {
-          publishPromiseStory = postJson(API_BASE + "/publish/" + id, scheduledAtStory ? { post_type: "story", scheduled_at: scheduledAtStory } : { post_type: "story" });
+          publishPromiseStory = postJson(API_BASE + "/publish/" + id, withActiveAccount(scheduledAtStory ? { post_type: "story", scheduled_at: scheduledAtStory } : { post_type: "story" }));
         }
         publishPromiseStory
           .then(function (res) {
@@ -634,7 +811,7 @@
         const doPublish = (type) => {
           btnPost.disabled = true;
           btnStory.disabled = true;
-          postJson(API_BASE + "/posts/" + id + "/republish", { post_type: type })
+          postJson(API_BASE + "/posts/" + id + "/republish", withActiveAccount({ post_type: type }))
             .then((res) => {
               if (res && res.success) {
                 restore();
@@ -744,7 +921,8 @@
   });
 
   // ——— Init ———
-  loadPosts("");
+  // Gönderiler ve otomasyon yükleme: loadAccountsForSwitcher() içinde activeAccountId
+  // belirlendikten sonra yapılır. Burada erken çağırmak çoklu hesapta yanlış /api isteklerine yol açar.
 
   // ——— Automation settings UI ———
   const automationEnabled = document.getElementById("automation-enabled");
@@ -759,7 +937,7 @@
 
   function loadAutomationSettings() {
     hideMessage(automationMessage);
-    getJson(API_BASE + "/automation/settings")
+    getJson(accountScopedUrl(API_BASE + "/automation/settings"))
       .then(function (res) {
         automationEnabled.checked = !!res.enabled;
         automationFrequency.value = res.frequency || "daily";
@@ -808,7 +986,7 @@
       end_time: readHourFromInput(automationEndHour),
       only_draft: !!automationOnlyDraft.checked,
     };
-    postJson(API_BASE + "/automation/settings", payload)
+    postJson(accountScopedUrl(API_BASE + "/automation/settings"), payload)
       .then(function (res) {
         showMessage(automationMessage, "Ayarlar kaydedildi.", "success");
         // refresh UI with saved values
@@ -826,8 +1004,6 @@
     btnAutomationSave.addEventListener("click", function () {
       saveAutomationSettings();
     });
-    // load on init
-    loadAutomationSettings();
   }
 
   // dynamic lists and panels
@@ -838,68 +1014,46 @@
   }
   automationFrequency && automationFrequency.addEventListener("change", togglePanels);
 
+  function makeAutomationCheckLabel(text, inputEl) {
+    const lab = document.createElement("label");
+    lab.className = "automation-check-label";
+    lab.appendChild(inputEl);
+    lab.appendChild(document.createTextNode(text));
+    return lab;
+  }
+
   function addDailyListItem(timeStr) {
     const list = document.getElementById("automation-daily-list");
     const el = document.createElement("div");
     el.className = "automation-time-item";
     // allow either string "HH:MM" or object {time: "HH:MM", auto_approve: bool}
     const item = typeof timeStr === "string" ? { time: timeStr, auto_approve: false } : timeStr || { time: "", auto_approve: false };
-    // content: label | auto-approve checkbox | countdown | remove
     const label = document.createElement("span");
     label.className = "time-label";
     label.textContent = String(item.time);
     const autoChk = document.createElement("input");
     autoChk.type = "checkbox";
     autoChk.className = "time-auto-approve";
-    autoChk.style.margin = "0 0.5rem";
     autoChk.checked = !!item.auto_approve;
-    const autoLabel = document.createElement("label");
-    autoLabel.style.display = "inline-flex";
-    autoLabel.style.alignItems = "center";
-    autoLabel.style.gap = "0.25rem";
-    autoLabel.style.color = "var(--text-muted)";
-    autoLabel.appendChild(autoChk);
-    autoLabel.appendChild(document.createTextNode("Otomatik onayla"));
-    // Auto-publish options (shown/enabled only when auto_approve is checked)
+    const autoLabel = makeAutomationCheckLabel("Otomatik onayla", autoChk);
     const postPublishChk = document.createElement("input");
     postPublishChk.type = "checkbox";
     postPublishChk.className = "time-auto-publish-post";
-    postPublishChk.style.margin = "0 0.25rem";
     postPublishChk.checked = !!item.auto_publish_post;
-    const postPublishLabel = document.createElement("label");
-    postPublishLabel.style.display = "inline-flex";
-    postPublishLabel.style.alignItems = "center";
-    postPublishLabel.style.gap = "0.25rem";
-    postPublishLabel.style.color = "var(--text-muted)";
-    postPublishLabel.appendChild(postPublishChk);
-    postPublishLabel.appendChild(document.createTextNode("Otomatik yayınla (Post)"));
+    const postPublishLabel = makeAutomationCheckLabel("Otomatik yayınla (Post)", postPublishChk);
 
     const storyPublishChk = document.createElement("input");
     storyPublishChk.type = "checkbox";
     storyPublishChk.className = "time-auto-publish-story";
-    storyPublishChk.style.margin = "0 0.25rem";
     storyPublishChk.checked = !!item.auto_publish_story;
-    const storyPublishLabel = document.createElement("label");
-    storyPublishLabel.style.display = "inline-flex";
-    storyPublishLabel.style.alignItems = "center";
-    storyPublishLabel.style.gap = "0.25rem";
-    storyPublishLabel.style.color = "var(--text-muted)";
-    storyPublishLabel.appendChild(storyPublishChk);
-    storyPublishLabel.appendChild(document.createTextNode("Otomatik yayınla (Story)"));
-    
+    const storyPublishLabel = makeAutomationCheckLabel("Otomatik yayınla (Story)", storyPublishChk);
+
     const reelsPublishChk = document.createElement("input");
     reelsPublishChk.type = "checkbox";
     reelsPublishChk.className = "time-auto-publish-reels";
-    reelsPublishChk.style.margin = "0 0.25rem";
     reelsPublishChk.checked = !!item.auto_publish_reels;
-    const reelsPublishLabel = document.createElement("label");
-    reelsPublishLabel.style.display = "inline-flex";
-    reelsPublishLabel.style.alignItems = "center";
-    reelsPublishLabel.style.gap = "0.25rem";
-    reelsPublishLabel.style.color = "var(--text-muted)";
-    reelsPublishLabel.appendChild(reelsPublishChk);
-    reelsPublishLabel.appendChild(document.createTextNode("Otomatik yayınla (Reels)"));
-    // Otomatik yayınla her zaman seçilebilir (aktif); kaydedilen değer yüklenince korunur
+    const reelsPublishLabel = makeAutomationCheckLabel("Otomatik yayınla (Reels)", reelsPublishChk);
+
     autoChk.addEventListener("change", function () {
       if (!autoChk.checked) {
         postPublishChk.checked = false;
@@ -909,19 +1063,24 @@
     });
     const countdown = document.createElement("span");
     countdown.className = "time-countdown";
-    countdown.style.margin = "0 0.75rem";
-    countdown.textContent = ""; // will be filled by timer
+    countdown.textContent = "";
     const btn = document.createElement("button");
     btn.className = "btn btn-secondary btn-remove";
     btn.type = "button";
     btn.textContent = "Kaldır";
+    const checksWrap = document.createElement("div");
+    checksWrap.className = "automation-time-item-checks";
+    checksWrap.appendChild(autoLabel);
+    checksWrap.appendChild(postPublishLabel);
+    checksWrap.appendChild(storyPublishLabel);
+    checksWrap.appendChild(reelsPublishLabel);
+    const actionsWrap = document.createElement("div");
+    actionsWrap.className = "automation-time-item-actions";
+    actionsWrap.appendChild(countdown);
+    actionsWrap.appendChild(btn);
     el.appendChild(label);
-    el.appendChild(autoLabel);
-    el.appendChild(postPublishLabel);
-    el.appendChild(storyPublishLabel);
-    el.appendChild(reelsPublishLabel);
-    el.appendChild(countdown);
-    el.appendChild(btn);
+    el.appendChild(checksWrap);
+    el.appendChild(actionsWrap);
     list.appendChild(el);
     // start countdown timer for this daily time
     const timerId = startDailyCountdown(countdown, String(item.time));
@@ -948,54 +1107,27 @@
     const autoChk = document.createElement("input");
     autoChk.type = "checkbox";
     autoChk.className = "time-auto-approve";
-    autoChk.style.margin = "0 0.5rem";
     autoChk.checked = !!item.auto_approve;
-    const autoLabel = document.createElement("label");
-    autoLabel.style.display = "inline-flex";
-    autoLabel.style.alignItems = "center";
-    autoLabel.style.gap = "0.25rem";
-    autoLabel.style.color = "var(--text-muted)";
-    autoLabel.appendChild(autoChk);
-    autoLabel.appendChild(document.createTextNode("Otomatik onayla"));
+    const autoLabel = makeAutomationCheckLabel("Otomatik onayla", autoChk);
     const postPublishChk = document.createElement("input");
     postPublishChk.type = "checkbox";
     postPublishChk.className = "time-auto-publish-post";
-    postPublishChk.style.margin = "0 0.25rem";
     postPublishChk.checked = !!item.auto_publish_post;
-    const postPublishLabel = document.createElement("label");
-    postPublishLabel.style.display = "inline-flex";
-    postPublishLabel.style.alignItems = "center";
-    postPublishLabel.style.gap = "0.25rem";
-    postPublishLabel.style.color = "var(--text-muted)";
-    postPublishLabel.appendChild(postPublishChk);
-    postPublishLabel.appendChild(document.createTextNode("Otomatik yayınla (Post)"));
+    const postPublishLabel = makeAutomationCheckLabel("Otomatik yayınla (Post)", postPublishChk);
     const storyPublishChk = document.createElement("input");
     storyPublishChk.type = "checkbox";
     storyPublishChk.className = "time-auto-publish-story";
-    storyPublishChk.style.margin = "0 0.25rem";
     storyPublishChk.checked = !!item.auto_publish_story;
-    const storyPublishLabel = document.createElement("label");
-    storyPublishLabel.style.display = "inline-flex";
-    storyPublishLabel.style.alignItems = "center";
-    storyPublishLabel.style.gap = "0.25rem";
-    storyPublishLabel.style.color = "var(--text-muted)";
-    storyPublishLabel.appendChild(storyPublishChk);
-    storyPublishLabel.appendChild(document.createTextNode("Otomatik yayınla (Story)"));
-    
+    const storyPublishLabel = makeAutomationCheckLabel("Otomatik yayınla (Story)", storyPublishChk);
+
     const reelsPublishChk = document.createElement("input");
     reelsPublishChk.type = "checkbox";
     reelsPublishChk.className = "time-auto-publish-reels";
-    reelsPublishChk.style.margin = "0 0.25rem";
     reelsPublishChk.checked = !!item.auto_publish_reels;
-    const reelsPublishLabel = document.createElement("label");
-    reelsPublishLabel.style.display = "inline-flex";
-    reelsPublishLabel.style.alignItems = "center";
-    reelsPublishLabel.style.gap = "0.25rem";
-    reelsPublishLabel.style.color = "var(--text-muted)";
-    reelsPublishLabel.appendChild(reelsPublishChk);
-    reelsPublishLabel.appendChild(document.createTextNode("Otomatik yayınla (Reels)"));
+    const reelsPublishLabel = makeAutomationCheckLabel("Otomatik yayınla (Reels)", reelsPublishChk);
     postPublishChk.disabled = !autoChk.checked;
     storyPublishChk.disabled = !autoChk.checked;
+    reelsPublishChk.disabled = !autoChk.checked;
     autoChk.addEventListener("change", function () {
       postPublishChk.disabled = !autoChk.checked;
       storyPublishChk.disabled = !autoChk.checked;
@@ -1008,19 +1140,24 @@
     });
     const countdown = document.createElement("span");
     countdown.className = "time-countdown";
-    countdown.style.margin = "0 0.75rem";
     countdown.textContent = "";
     const btn = document.createElement("button");
     btn.className = "btn btn-secondary btn-remove";
     btn.type = "button";
     btn.textContent = "Kaldır";
+    const checksWrap = document.createElement("div");
+    checksWrap.className = "automation-time-item-checks";
+    checksWrap.appendChild(autoLabel);
+    checksWrap.appendChild(postPublishLabel);
+    checksWrap.appendChild(storyPublishLabel);
+    checksWrap.appendChild(reelsPublishLabel);
+    const actionsWrap = document.createElement("div");
+    actionsWrap.className = "automation-time-item-actions";
+    actionsWrap.appendChild(countdown);
+    actionsWrap.appendChild(btn);
     el.appendChild(label);
-    el.appendChild(autoLabel);
-    el.appendChild(postPublishLabel);
-    el.appendChild(storyPublishLabel);
-    el.appendChild(reelsPublishLabel);
-    el.appendChild(countdown);
-    el.appendChild(btn);
+    el.appendChild(checksWrap);
+    el.appendChild(actionsWrap);
     list.appendChild(el);
     // start weekly countdown
     const timerId = startWeeklyCountdown(countdown, item);
@@ -1201,7 +1338,7 @@
       daily_times: daily,
       weekly_times: weekly,
     };
-    postJson(API_BASE + "/automation/settings", payload)
+    postJson(accountScopedUrl(API_BASE + "/automation/settings"), payload)
       .then(function (res) {
         showMessage(automationMessage, "Ayarlar kaydedildi.", "success");
         loadAutomationSettings();

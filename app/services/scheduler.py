@@ -5,7 +5,6 @@ from typing import cast
 
 from app.services.trend_radar import get_trending_topics, get_next_topic_and_type
 from app.services.content_ai import (
-    generate_caption,
     generate_hashtags,
     generate_image_prompt,
     format_post_text,
@@ -16,13 +15,21 @@ from app.services.monetization import attach_affiliate
 from app.services.instagram import publish_image as ig_publish_image, publish_story as ig_publish_story
 from app.database import SessionLocal
 from app.models import AutomationSetting, Account, Post, PostStatus, PostType
+from app.security import decrypt_secret
 from app.services.storage_service import save_png_bytes_to_generated, upload_to_remote_server
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from app.config import BASE_URL
+from app.services.content_uniqueness import generate_caption_deduped
 import json, os
 from app.services.reels_engine import generate_reel_structure, generate_and_publish_reel
 from app.services.feedback_loop_engine import load_learning_state
+from app.services.content_engagement_boost import (
+    build_engagement_pack,
+    caption_length_hint_from_learning,
+    format_engagement_pack_for_caption,
+    is_engagement_boost_enabled,
+)
 
 
 def next_post_time():
@@ -125,12 +132,31 @@ def run_automation_check():
             except Exception:
                 pass
 
+            def _release_automation_claim(sid: int, rdate: str, sk: str) -> None:
+                dbr = SessionLocal()
+                try:
+                    dbr.execute(
+                        text(
+                            "DELETE FROM automation_runs WHERE setting_id = :sid AND run_date = :rd AND slot_key = :sk"
+                        ),
+                        {"sid": sid, "rd": rdate, "sk": sk},
+                    )
+                    dbr.commit()
+                except Exception:
+                    try:
+                        dbr.rollback()
+                    except Exception:
+                        pass
+                finally:
+                    dbr.close()
+
             def generate_draft_for_setting(
                 auto_approve: bool = False,
                 auto_publish_post: bool = False,
                 auto_publish_story: bool = False,
                 auto_publish_reels: bool = False,
                 recent_threshold_minutes: int | None = None,
+                automation_slot_key: str = "__fb__",
             ):
                 def build_reel_visual_prompts(topic_text: str, base_prompt: str, count: int = 3) -> list[str]:
                     """
@@ -215,33 +241,41 @@ def run_automation_check():
                     exclude_last_topic=last_topic,
                     exclude_recent_topics=recent_topics,
                 )
-                # Dedup check: avoid creating multiple drafts in short time for same account.
-                # When called from explicit daily_times/weekly_times slot, use shorter window (2 min) so each slot can produce one draft.
-                threshold_min = recent_threshold_minutes if recent_threshold_minutes is not None else 10
-                try:
-                    cutoff = datetime.utcnow() - timedelta(minutes=float(threshold_min))
-                    recent_cnt = db.query(Post).filter(Post.account_id == s.account_id, Post.created_at >= cutoff).count()
-                    if recent_cnt > 0:
-                        try:
-                            print(f"[AUTOMATION] Skipping draft generation for setting id={s.id} - recent drafts found ({recent_cnt}) within last {threshold_min} minutes.")
-                        except Exception:
-                            pass
-                        return
-                except Exception:
-                    pass
+                # Optional time-based dedup. Explicit daily/weekly slots use automation_runs only — pass recent_threshold_minutes=0.
+                if recent_threshold_minutes is None:
+                    threshold_min = 10.0
+                else:
+                    threshold_min = float(recent_threshold_minutes)
+                if threshold_min > 0:
+                    try:
+                        cutoff = datetime.utcnow() - timedelta(minutes=threshold_min)
+                        recent_cnt = db.query(Post).filter(Post.account_id == s.account_id, Post.created_at >= cutoff).count()
+                        if recent_cnt > 0:
+                            try:
+                                print(
+                                    f"[AUTOMATION] Skipping draft generation for setting id={s.id} - recent drafts found ({recent_cnt}) within last {threshold_min} minutes."
+                                )
+                            except Exception:
+                                pass
+                            return
+                    except Exception:
+                        pass
 
-                # Claim-run via automation_runs table to prevent concurrent generators across processes.
+                # Claim-run via automation_runs (per local day + slot) across processes.
+                run_date = local_now.date().isoformat()
+                slot_key = (automation_slot_key or "__fb__").strip() or "__fb__"
+                claim_inserted = False
                 try:
-                    run_date = local_now.date().isoformat()
                     db_claim = SessionLocal()
                     try:
                         db_claim.execute(
                             text(
-                                "INSERT INTO automation_runs (setting_id, run_date, created_at) VALUES (:sid, :rd, :now)"
+                                "INSERT INTO automation_runs (setting_id, run_date, slot_key, created_at) VALUES (:sid, :rd, :sk, :now)"
                             ),
-                            {"sid": s.id, "rd": run_date, "now": datetime.utcnow()},
+                            {"sid": s.id, "rd": run_date, "sk": slot_key, "now": datetime.utcnow()},
                         )
                         db_claim.commit()
+                        claim_inserted = True
                     finally:
                         try:
                             db_claim.close()
@@ -249,23 +283,62 @@ def run_automation_check():
                             pass
                 except IntegrityError:
                     try:
-                        print(f"[AUTOMATION] Another process already claimed run for setting id={s.id} date={run_date}; skipping.")
+                        print(
+                            f"[AUTOMATION] Slot already claimed: setting id={s.id} date={run_date} slot={slot_key}; skipping."
+                        )
                     except Exception:
                         pass
                     return
-                except Exception:
-                    # If claim fails for any reason, continue but rely on other dedupe checks.
-                    pass
+                except Exception as claim_exc:
+                    try:
+                        print(f"[AUTOMATION] automation_runs claim failed for setting id={s.id}: {claim_exc}")
+                    except Exception:
+                        pass
+                    return
+                learning_state_pre = None
+                engagement_pack = None
+                engagement_caption_addon = None
+                visual_engagement = None
+                hashtag_focus = None
                 try:
-                    caption = generate_caption(topic, content_type=content_type)
+                    if is_engagement_boost_enabled():
+                        learning_state_pre = load_learning_state()
+                        engagement_pack = build_engagement_pack(topic, content_type, learning_state_pre)
+                        if engagement_pack:
+                            engagement_caption_addon = format_engagement_pack_for_caption(
+                                engagement_pack,
+                                length_hint=caption_length_hint_from_learning(learning_state_pre),
+                            )
+                            ve = (engagement_pack.get("visual_direction_en") or "").strip()
+                            visual_engagement = ve or None
+                            hf = (engagement_pack.get("hashtag_focus_tr") or "").strip()
+                            hashtag_focus = hf or None
+                except Exception as _eb:
+                    try:
+                        print(f"[ENGAGEMENT_BOOST] {_eb}")
+                    except Exception:
+                        pass
+                try:
+                    caption = generate_caption_deduped(
+                        topic,
+                        content_type=content_type,
+                        engagement_addon=engagement_caption_addon,
+                        db=db,
+                        account_id=cast(int, s.account_id),
+                    )
                 except Exception:
                     caption = f"Auto draft: {topic}"
                 try:
-                    hashtags = generate_hashtags(topic, caption=caption, count=10)
+                    hashtags = generate_hashtags(
+                        topic,
+                        caption=caption,
+                        count=10,
+                        engagement_focus=hashtag_focus,
+                    )
                 except Exception:
                     hashtags = []
                 try:
-                    image_prompt = generate_image_prompt(topic)
+                    image_prompt = generate_image_prompt(topic, engagement_visual_addon=visual_engagement)
                     if auto_publish_reels:
                         reel_prompts = build_reel_visual_prompts(topic, image_prompt, count=3)
                         first_bytes = generate_image_bytes(reel_prompts[0])
@@ -328,6 +401,9 @@ def run_automation_check():
                     )
                 except Exception:
                     public_url = public_bg
+                # Otomatik yayın seçiliyse taslak bırakma (çoklu hesap / panellerde "üretilmedi" izlenimi oluşmasın).
+                wants_publish = bool(auto_publish_post or auto_publish_story or auto_publish_reels)
+                initial_status = PostStatus.APPROVED if (auto_approve or wants_publish) else PostStatus.DRAFT
                 post = Post(
                     account_id=s.account_id,
                     topic=topic,
@@ -335,28 +411,43 @@ def run_automation_check():
                     hashtags=json.dumps(hashtags),
                     image_prompt=image_prompt if "image_prompt" in locals() else None,
                     image_url=public_url,
-                    status=PostStatus.APPROVED if auto_approve else PostStatus.DRAFT,
+                    status=initial_status,
                     type=PostType.REELS if auto_publish_reels else PostType.POST,
                     created_at=datetime.utcnow(),
                 )
-                # Second safety check (re-query just before commit to reduce race windows).
-                try:
-                    cutoff2 = datetime.utcnow() - timedelta(minutes=float(threshold_min))
-                    recent_cnt2 = db.query(Post).filter(Post.account_id == s.account_id, Post.created_at >= cutoff2).count()
-                    if recent_cnt2 > 0:
-                        try:
-                            print(f"[AUTOMATION] Aborting commit for draft generation for setting id={s.id} - recent drafts found ({recent_cnt2}) just before commit.")
-                        except Exception:
-                            pass
-                        return
-                except Exception:
-                    pass
+                # Second safety check (only when time-based dedup is enabled).
+                if threshold_min > 0:
+                    try:
+                        cutoff2 = datetime.utcnow() - timedelta(minutes=threshold_min)
+                        recent_cnt2 = db.query(Post).filter(Post.account_id == s.account_id, Post.created_at >= cutoff2).count()
+                        if recent_cnt2 > 0:
+                            try:
+                                print(
+                                    f"[AUTOMATION] Aborting commit for draft generation for setting id={s.id} - recent drafts found ({recent_cnt2}) just before commit."
+                                )
+                            except Exception:
+                                pass
+                            _release_automation_claim(cast(int, s.id), run_date, slot_key)
+                            return
+                    except Exception:
+                        pass
 
                 db.add(post)
                 # store last_run_at in UTC
                 s.last_run_at = datetime.utcnow()
                 db.add(s)
-                db.commit()
+                try:
+                    db.commit()
+                except Exception as commit_exc:
+                    if claim_inserted:
+                        try:
+                            print(
+                                f"[AUTOMATION] Commit failed after claim setting id={s.id} slot={slot_key}: {commit_exc}"
+                            )
+                        except Exception:
+                            pass
+                        _release_automation_claim(cast(int, s.id), run_date, slot_key)
+                    raise
                 try:
                     print(f"[AUTOMATION] Generated draft id={post.id} for setting id={s.id} topic={topic}")
                 except Exception:
@@ -367,8 +458,8 @@ def run_automation_check():
                     if not acct:
                         pass
                     else:
-                        ig_user_id = acct.ig_user_id
-                        access_token = os.getenv("INSTAGRAM_ACCESS_TOKEN") or acct.access_token
+                        ig_user_id = cast(str, acct.ig_user_id)
+                        access_token = os.getenv("INSTAGRAM_ACCESS_TOKEN") or (decrypt_secret(cast(str, acct.access_token)) or cast(str, acct.access_token))
                         image_url_abs = public_url
                         if image_url_abs and (image_url_abs.startswith("/static/") or image_url_abs.startswith("/media/")):
                             domain = (BASE_URL or "http://127.0.0.1:8000").rstrip("/")
@@ -547,32 +638,20 @@ def run_automation_check():
                         # interpret user's time as local timezone (use local calendar day) then convert to UTC (naive) for comparison
                         scheduled_local = datetime(local_now.year, local_now.month, local_now.day, hh, mm, tzinfo=local_tz)
                         scheduled_dt = scheduled_local.astimezone(timezone.utc).replace(tzinfo=None)
-                        # only act when scheduled time <= now (both naive UTC)
+                        # only act when scheduled time <= now (both naive UTC). Idempotency: automation_runs slot_key per HH:MM.
                         if scheduled_dt <= now:
-                            # if last_run_at is None or earlier than scheduled_dt, generate
-                            last_run = s.last_run_at
-                            # Normalize comparison using local timezone to avoid UTC day-shift issues.
-                            # scheduled_local is aware (local_tz). Convert last_run (naive UTC stored) to local tz.
-                            last_run_local = None
-                            if last_run:
-                                try:
-                                    last_run_utc = last_run.replace(tzinfo=timezone.utc)
-                                    last_run_local = last_run_utc.astimezone(local_tz)
-                                except Exception:
-                                    last_run_local = None
-                            # If we've never run (last_run_local is None) OR last run was before this scheduled_local time, generate.
-                            if not last_run_local or last_run_local < scheduled_local:
-                                auto_publish_post = bool(t.get("auto_publish_post")) if isinstance(t, dict) else False
-                                auto_publish_story = bool(t.get("auto_publish_story")) if isinstance(t, dict) else False
-                                auto_publish_reels = bool(t.get("auto_publish_reels")) if isinstance(t, dict) else False
-                                # Use 2-min recent window so consecutive slots (e.g. 01:08 and 01:10) can each generate one draft with image
-                                generate_draft_for_setting(
-                                    auto_approve=auto_approve,
-                                    auto_publish_post=auto_publish_post,
-                                    auto_publish_story=auto_publish_story,
-                                    auto_publish_reels=auto_publish_reels,
-                                    recent_threshold_minutes=2,
-                                )
+                            auto_publish_post = bool(t.get("auto_publish_post")) if isinstance(t, dict) else False
+                            auto_publish_story = bool(t.get("auto_publish_story")) if isinstance(t, dict) else False
+                            auto_publish_reels = bool(t.get("auto_publish_reels")) if isinstance(t, dict) else False
+                            slot_key = f"d|{hh:02d}:{mm:02d}"
+                            generate_draft_for_setting(
+                                auto_approve=auto_approve,
+                                auto_publish_post=auto_publish_post,
+                                auto_publish_story=auto_publish_story,
+                                auto_publish_reels=auto_publish_reels,
+                                recent_threshold_minutes=0,
+                                automation_slot_key=slot_key,
+                            )
                     except Exception:
                         continue
                 # done with this setting
@@ -608,33 +687,35 @@ def run_automation_check():
                         scheduled_local = datetime(scheduled_date_local.year, scheduled_date_local.month, scheduled_date_local.day, hh, mm, tzinfo=local_tz)
                         scheduled_dt = scheduled_local.astimezone(timezone.utc).replace(tzinfo=None)
                         if scheduled_dt <= now:
-                            last_run = s.last_run_at
-                            # Convert stored naive-UTC last_run to local timezone for reliable comparison
-                            last_run_local = None
-                            if last_run:
-                                try:
-                                    last_run_utc = last_run.replace(tzinfo=timezone.utc)
-                                    last_run_local = last_run_utc.astimezone(local_tz)
-                                except Exception:
-                                    last_run_local = None
-                            if not last_run_local or last_run_local < scheduled_dt.astimezone(local_tz):
-                                auto_publish_post = bool(item.get("auto_publish_post")) if isinstance(item, dict) else False
-                                auto_publish_story = bool(item.get("auto_publish_story")) if isinstance(item, dict) else False
-                                auto_publish_reels = bool(item.get("auto_publish_reels")) if isinstance(item, dict) else False
-                                generate_draft_for_setting(
-                                    auto_approve=auto_approve,
-                                    auto_publish_post=auto_publish_post,
-                                    auto_publish_story=auto_publish_story,
-                                    auto_publish_reels=auto_publish_reels,
-                                    recent_threshold_minutes=2,
-                                )
+                            auto_publish_post = bool(item.get("auto_publish_post")) if isinstance(item, dict) else False
+                            auto_publish_story = bool(item.get("auto_publish_story")) if isinstance(item, dict) else False
+                            auto_publish_reels = bool(item.get("auto_publish_reels")) if isinstance(item, dict) else False
+                            slot_key = f"w|{day}|{hh:02d}:{mm:02d}"
+                            generate_draft_for_setting(
+                                auto_approve=auto_approve,
+                                auto_publish_post=auto_publish_post,
+                                auto_publish_story=auto_publish_story,
+                                auto_publish_reels=auto_publish_reels,
+                                recent_threshold_minutes=0,
+                                automation_slot_key=slot_key,
+                            )
                     except Exception:
                         continue
                 continue
 
-            # fallback: original daily_count-based generation when no explicit times provided
+            # fallback: daily_count-based generation when no explicit times provided.
+            # IMPORTANT: do not auto-generate unless user explicitly configured a positive daily_count.
             if s.frequency == "daily":
-                target = s.daily_count or 1
+                dc_raw = cast(int | None, s.daily_count)
+                target = int(dc_raw) if dc_raw is not None else 0
+                if target <= 0:
+                    try:
+                        print(
+                            f"[AUTOMATION] Skipping setting id={s.id} - no explicit schedule (daily_times/weekly_times empty and daily_count not set)."
+                        )
+                    except Exception:
+                        pass
+                    continue
                 # count drafts today for this account
                 day_start = datetime(now.year, now.month, now.day)
                 cnt = db.query(Post).filter(Post.account_id == s.account_id, Post.created_at >= day_start).count()
